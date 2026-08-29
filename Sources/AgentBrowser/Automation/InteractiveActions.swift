@@ -16,7 +16,8 @@ extension BrowserAutomationService {
     ) {
         let escapedId = escapeJSString(elementId)
         let args = jsArgs.isEmpty ? "'\(escapedId)'" : "'\(escapedId)', \(jsArgs)"
-        let script = "JSON.stringify(window.__agentBrowser.\(action)(\(args)))"
+        // JS functions already return JSON.stringify'd results -- do NOT double-stringify
+        let script = "window.__agentBrowser.\(action)(\(args))"
         runActionScript(id: id, elementId: elementId, action: action, script: script, completion: completion)
     }
 
@@ -51,22 +52,22 @@ extension BrowserAutomationService {
             guard let elId = elementId else {
                 return .failure(code: ErrorCode.invalidParams, message: "Missing 'elementId'")
             }
-            script = "JSON.stringify(window.__agentBrowser.click('\(escapeJSString(elId))'))"
+            script = "window.__agentBrowser.click('\(escapeJSString(elId))')"
         case "fill":
             guard let elId = elementId else {
                 return .failure(code: ErrorCode.invalidParams, message: "Missing 'elementId'")
             }
             let v = escapeJSString(value ?? "")
-            script = "JSON.stringify(window.__agentBrowser.fill('\(escapeJSString(elId))', '\(v)'))"
+            script = "window.__agentBrowser.fill('\(escapeJSString(elId))', '\(v)')"
         case "press":
             let handleArg = elementId.map { "'\(escapeJSString($0))'" } ?? "null"
-            script = "JSON.stringify(window.__agentBrowser.press(\(handleArg), '\(escapeJSString(value ?? ""))'))"
+            script = "window.__agentBrowser.press(\(handleArg), '\(escapeJSString(value ?? ""))')"
         case "select":
             guard let elId = elementId else {
                 return .failure(code: ErrorCode.invalidParams, message: "Missing 'elementId'")
             }
             let v = escapeJSString(value ?? "")
-            script = "JSON.stringify(window.__agentBrowser.select('\(escapeJSString(elId))', '\(v)'))"
+            script = "window.__agentBrowser.select('\(escapeJSString(elId))', '\(v)')"
         default:
             return .failure(code: ErrorCode.unknownMethod, message: "Unknown action: \(action)")
         }

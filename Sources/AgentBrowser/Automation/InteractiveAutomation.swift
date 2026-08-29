@@ -75,7 +75,7 @@ extension BrowserAutomationService {
             }
             let elId = params["elementId"] as? String
             let handleArg = elId.map { "'\(escapeJSString($0))'" } ?? "null"
-            let script = "JSON.stringify(window.__agentBrowser.press(\(handleArg), '\(escapeJSString(key))'))"
+            let script = "window.__agentBrowser.press(\(handleArg), '\(escapeJSString(key))')"
             runActionScript(id: id, elementId: elId, action: "press", script: script, completion: completion)
             return true
 
@@ -93,7 +93,7 @@ extension BrowserAutomationService {
             }
             let condition = params["condition"] as? String ?? "load"
             let value = params["value"] as? String
-            let timeout = params["timeout"] as? Double ?? 10.0
+            let timeout = (params["timeout"] as? Double) ?? Double(params["timeout"] as? Int ?? 10)
             waitCallback(id: id, condition: condition, value: value, timeout: timeout, completion: completion)
             return true
 
@@ -146,7 +146,7 @@ extension BrowserAutomationService {
             }
             let condition = params["condition"] as? String ?? "load"
             let value = params["value"] as? String
-            let timeout = params["timeout"] as? Double ?? 10.0
+            let timeout = (params["timeout"] as? Double) ?? Double(params["timeout"] as? Int ?? 10)
             return await waitResponse(id: id, condition: condition, value: value, timeout: timeout)
 
         default:
@@ -160,7 +160,8 @@ extension BrowserAutomationService {
         guard let tab = resolveTab(id) else {
             completion(.failure(code: ErrorCode.tabNotFound, message: "No tab with id: \(id)")); return
         }
-        let script = "JSON.stringify(window.__agentBrowser ? window.__agentBrowser.inspect() : {error:'BRIDGE_NOT_LOADED'})"
+        // inspect() already returns a JSON string -- do NOT double-stringify
+        let script = "window.__agentBrowser ? window.__agentBrowser.inspect() : JSON.stringify({error:'BRIDGE_NOT_LOADED'})"
         let tabID = tab.id.uuidString
         let tabTitle = tab.title
         let tabURL = tab.url?.absoluteString
@@ -179,7 +180,7 @@ extension BrowserAutomationService {
         guard let tab = resolveTab(id) else {
             return .failure(code: ErrorCode.tabNotFound, message: "No tab with id: \(id)")
         }
-        let script = "JSON.stringify(window.__agentBrowser ? window.__agentBrowser.inspect() : {error:'BRIDGE_NOT_LOADED'})"
+        let script = "window.__agentBrowser ? window.__agentBrowser.inspect() : JSON.stringify({error:'BRIDGE_NOT_LOADED'})"
         do {
             let raw = try await evalJSOnTab(tab, script: script)
             return Self.parseInspectResult(raw: raw, tabID: tab.id.uuidString, title: tab.title, url: tab.url?.absoluteString)

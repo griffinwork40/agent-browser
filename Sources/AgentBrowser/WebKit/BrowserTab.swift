@@ -141,15 +141,15 @@ final class BrowserTab: Identifiable {
         config.allowsAirPlayForMediaPlayback = true
 
         // Inject the automation bridge into every page for element inspection,
-        // click, fill, press, select, and wait operations. Runs in the
-        // .defaultClient content world so it's isolated from page scripts
-        // and exempt from CSP restrictions.
+        // click, fill, press, select, and wait operations.
+        // Runs in the page content world so evaluateJavaScript() can access
+        // window.__agentBrowser directly. The bridge is safe to expose --
+        // it only provides inspection and interaction helpers, no privileged APIs.
         if let bridgeJS = Self.loadAutomationBridge() {
             let script = WKUserScript(
                 source: bridgeJS,
                 injectionTime: .atDocumentEnd,
-                forMainFrameOnly: true,
-                in: .defaultClient
+                forMainFrameOnly: true
             )
             config.userContentController.addUserScript(script)
         }
