@@ -2,16 +2,36 @@ import AppKit
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var windowController: BrowserWindowController?
+    private var agentServer: AgentHTTPServer?
+
+    // Shared state: the single TabManager for the whole app.
+    // Initialized in applicationDidFinishLaunching (already on main thread).
+    private var tabManager: TabManager?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupMainMenu()
-        windowController = BrowserWindowController()
+
+        let tm = TabManager()
+        self.tabManager = tm
+
+        // Create the browser window
+        windowController = BrowserWindowController(tabManager: tm)
         windowController?.showWindow(nil)
+
+        // Start the agent automation server
+        let automationService = BrowserAutomationService(tabManager: tm)
+        agentServer = AgentHTTPServer(automationService: automationService)
+        agentServer?.start()
+
         NSApp.activate(ignoringOtherApps: true)
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         true
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        agentServer?.stop()
     }
 
     // MARK: - Main Menu
@@ -45,10 +65,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
         editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
         editMenu.addItem(.separator())
-
-        let findItem = NSMenuItem(title: "Find...", action: #selector(BrowserWindowController.performFind(_:)), keyEquivalent: "f")
-        editMenu.addItem(findItem)
-
+        editMenu.addItem(NSMenuItem(title: "Find...", action: #selector(BrowserWindowController.performFind(_:)), keyEquivalent: "f"))
         let editMenuItem = NSMenuItem()
         editMenuItem.submenu = editMenu
         mainMenu.addItem(editMenuItem)
@@ -56,39 +73,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // View menu
         let viewMenu = NSMenu(title: "View")
         viewMenu.addItem(withTitle: "Reload", action: #selector(BrowserWindowController.reloadPage(_:)), keyEquivalent: "r")
-
         let hardReloadItem = NSMenuItem(title: "Hard Reload", action: #selector(BrowserWindowController.hardReloadPage(_:)), keyEquivalent: "R")
         hardReloadItem.keyEquivalentModifierMask = [.command, .shift]
         viewMenu.addItem(hardReloadItem)
-
         viewMenu.addItem(.separator())
-
-        let zoomInItem = NSMenuItem(title: "Zoom In", action: #selector(BrowserWindowController.zoomIn(_:)), keyEquivalent: "+")
-        viewMenu.addItem(zoomInItem)
-
-        let zoomOutItem = NSMenuItem(title: "Zoom Out", action: #selector(BrowserWindowController.zoomOut(_:)), keyEquivalent: "-")
-        viewMenu.addItem(zoomOutItem)
-
-        let resetZoomItem = NSMenuItem(title: "Actual Size", action: #selector(BrowserWindowController.resetZoom(_:)), keyEquivalent: "0")
-        viewMenu.addItem(resetZoomItem)
-
+        viewMenu.addItem(NSMenuItem(title: "Zoom In", action: #selector(BrowserWindowController.zoomIn(_:)), keyEquivalent: "+"))
+        viewMenu.addItem(NSMenuItem(title: "Zoom Out", action: #selector(BrowserWindowController.zoomOut(_:)), keyEquivalent: "-"))
+        viewMenu.addItem(NSMenuItem(title: "Actual Size", action: #selector(BrowserWindowController.resetZoom(_:)), keyEquivalent: "0"))
         let viewMenuItem = NSMenuItem()
         viewMenuItem.submenu = viewMenu
         mainMenu.addItem(viewMenuItem)
 
         // Navigate menu
         let navMenu = NSMenu(title: "Navigate")
-        let backItem = NSMenuItem(title: "Back", action: #selector(BrowserWindowController.goBack(_:)), keyEquivalent: "[")
-        navMenu.addItem(backItem)
-
-        let forwardItem = NSMenuItem(title: "Forward", action: #selector(BrowserWindowController.goForward(_:)), keyEquivalent: "]")
-        navMenu.addItem(forwardItem)
-
+        navMenu.addItem(NSMenuItem(title: "Back", action: #selector(BrowserWindowController.goBack(_:)), keyEquivalent: "["))
+        navMenu.addItem(NSMenuItem(title: "Forward", action: #selector(BrowserWindowController.goForward(_:)), keyEquivalent: "]"))
         navMenu.addItem(.separator())
-
-        let focusAddressItem = NSMenuItem(title: "Open Location...", action: #selector(BrowserWindowController.focusAddressBar(_:)), keyEquivalent: "l")
-        navMenu.addItem(focusAddressItem)
-
+        navMenu.addItem(NSMenuItem(title: "Open Location...", action: #selector(BrowserWindowController.focusAddressBar(_:)), keyEquivalent: "l"))
         let navMenuItem = NSMenuItem()
         navMenuItem.submenu = navMenu
         mainMenu.addItem(navMenuItem)
@@ -97,29 +98,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let windowMenu = NSMenu(title: "Window")
         windowMenu.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
         windowMenu.addItem(withTitle: "Zoom", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
-
-        // Tab switching: Cmd+1 through Cmd+9
         windowMenu.addItem(.separator())
         for i in 1...9 {
-            let item = NSMenuItem(
-                title: "Tab \(i)",
-                action: #selector(BrowserWindowController.switchToTabByNumber(_:)),
-                keyEquivalent: "\(i)"
-            )
+            let item = NSMenuItem(title: "Tab \(i)", action: #selector(BrowserWindowController.switchToTabByNumber(_:)), keyEquivalent: "\(i)")
             item.tag = i
             windowMenu.addItem(item)
         }
-
-        // Ctrl+Tab / Ctrl+Shift+Tab for next/prev tab
         windowMenu.addItem(.separator())
         let nextTabItem = NSMenuItem(title: "Show Next Tab", action: #selector(BrowserWindowController.selectNextTab(_:)), keyEquivalent: "\t")
         nextTabItem.keyEquivalentModifierMask = [.control]
         windowMenu.addItem(nextTabItem)
-
         let prevTabItem = NSMenuItem(title: "Show Previous Tab", action: #selector(BrowserWindowController.selectPreviousTab(_:)), keyEquivalent: "\t")
         prevTabItem.keyEquivalentModifierMask = [.control, .shift]
         windowMenu.addItem(prevTabItem)
-
         let windowMenuItem = NSMenuItem()
         windowMenuItem.submenu = windowMenu
         mainMenu.addItem(windowMenuItem)

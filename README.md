@@ -1,90 +1,143 @@
 # Agent Browser
 
-A native macOS browser designed for humans working alongside AI agents.
+A native macOS browser where every tab is a programmable object.
 
 ## What is this
 
-A fast, native macOS browser built in Swift on WebKit. It is an excellent normal browser that becomes unusually powerful when paired with AI coding agents.
+A fast, native macOS browser built in Swift on WebKit. It works as a normal browser, but every live tab is addressable by external AI agents through a local API.
 
-The core idea: the browser itself is agent-addressable. Every tab is a programmable object. External agents can inspect, navigate, and interact with pages through a local API. The user browses normally. The agent reads and acts on the same authenticated sessions the user already has open.
+When you browse the web normally, any external process on your machine can:
 
-This is **not** a browser with an AI chatbot sidebar. The browser *itself* is the programmable surface.
+- **List your open tabs** and their metadata
+- **Read page content** from the actual live DOM (not a re-fetch -- authenticated pages, client-rendered SPAs, dynamic content)
+- **Open URLs** in new tabs
+- **Execute JavaScript** in any tab
+- **Capture screenshots** of any tab
 
-## Status
+All operations target the same WKWebView instances you are using. No headless browser. No Playwright. No Chromium.
 
-**Phase 1: one-tab browser** (in progress)
-
-- [x] Technical spike (validated WKWebView assumptions)
-- [x] AppKit window with WKWebView
-- [x] Address bar with URL/search
-- [x] Back / forward / reload / stop
-- [x] Page title in window title
-- [x] Loading progress bar
-- [x] Basic keyboard shortcuts (Cmd+L, Cmd+R, Cmd+[, Cmd+], Cmd+T, Cmd+W)
-- [x] Multiple tabs (Cmd+T, Cmd+W, Cmd+1-9, Ctrl+Tab)
-- [x] Reopen closed tab (Cmd+Shift+T)
-- [x] JavaScript alerts/confirms/prompts
-- [x] File uploads
-- [x] Downloads (to ~/Downloads)
-- [x] Popup handling
-- [x] Find in page (Cmd+F)
-- [x] Zoom (Cmd+/-, Cmd+0)
-- [ ] Tab sidebar (Phase 2)
-- [ ] History / bookmarks (Phase 3)
-- [ ] Session restore (Phase 3)
-- [ ] Agent API (Phase 6)
-
-## Build
-
-Requires macOS 14+ and Swift 5.9+.
+## Quick Start
 
 ```bash
-swift build
-```
-
-## Run
-
-```bash
-swift run AgentBrowser
-```
-
-Or build and run the binary directly:
-
-```bash
+# Build and run
 swift build && .build/debug/AgentBrowser
 ```
 
+The browser opens a window and starts a local API server on `127.0.0.1:8833`.
+
+Connection info is written to `~/.config/agent-browser/connection.json`:
+```json
+{
+  "url": "http://127.0.0.1:8833",
+  "token": "<random-bearer-token>",
+  "pid": 12345
+}
+```
+
+## CLI
+
+```bash
+# Check if browser is running
+./browser-ctl health
+
+# List all open tabs
+./browser-ctl tabs
+
+# Open a URL
+./browser-ctl open https://github.com
+
+# Read page content from a live tab
+./browser-ctl read <tab-id>
+
+# Execute JavaScript
+./browser-ctl js <tab-id> 'return document.title'
+
+# Take a screenshot
+./browser-ctl screenshot <tab-id> page.png
+```
+
+## HTTP API
+
+All endpoints require `Authorization: Bearer <token>` (except `/health`).
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/health` | Health check (no auth) |
+| `GET` | `/api/tabs` | List all tabs |
+| `GET` | `/api/tabs/:id` | Get tab details |
+| `POST` | `/api/tabs` | Open URL in new tab (`{"url": "..."}`) |
+| `GET` | `/api/tabs/:id/read` | Read page content (live DOM text) |
+| `POST` | `/api/tabs/:id/js` | Execute JavaScript (`{"script": "..."}`) |
+| `GET` | `/api/tabs/:id/screenshot` | Capture viewport as PNG |
+
+### Examples
+
+```bash
+TOKEN=$(python3 -c "import json; print(json.load(open('$HOME/.config/agent-browser/connection.json'))['token'])")
+
+# List tabs
+curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8833/api/tabs
+
+# Read a page
+curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8833/api/tabs/<id>/read
+
+# Execute JS
+curl -s -X POST -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"script": "return document.title"}' \
+  http://127.0.0.1:8833/api/tabs/<id>/js
+```
+
+## Security
+
+- Server binds to **127.0.0.1 only** -- no network exposure
+- **Bearer token** authentication on every request (random 32-byte token)
+- **Host header validation** prevents DNS rebinding attacks
+- Token stored in `~/.config/agent-browser/connection.json` (mode 0600)
+
 ## Architecture
 
-See [BROWSER_SCOPE.md](BROWSER_SCOPE.md) for the full scope document, including:
+```
+External Agent (Claude Code, AFK, curl, etc.)
+    |
+    | HTTP + Bearer token
+    |
+AgentHTTPServer (NWListener on 127.0.0.1:8833)
+    |
+    | @MainActor dispatch
+    |
+BrowserAutomationService
+    |
+    | operates on live tab state
+    |
+TabManager --> [BrowserTab] --> WKWebView
+    ^                              |
+    |                              | KVO
+    +-- BrowserWindowController ---+
+        (UI: address bar, tabs, navigation)
+```
 
-- Technical feasibility assessment
-- Architecture design
-- Tab lifecycle model
-- Automation design
-- Security model
-- Persistence strategy
-- V1 scope and non-goals
-- 7-phase implementation roadmap
+The automation service and the UI both operate on the same `TabManager` and `BrowserTab` instances. When an agent opens a tab, it appears in the browser window. When an agent reads a page, it reads from the same WKWebView the user is looking at.
 
-## Core stack
+## Status
 
-| Layer | Technology |
-|---|---|
-| Language | Swift 5.9+ |
-| UI | AppKit (windows, layout, WKWebView) + SwiftUI (sidebar, overlays) |
-| Web engine | WKWebView (system WebKit) |
-| Minimum macOS | 14 (Sonoma) |
-| Agent API (planned) | HTTP on 127.0.0.1 (MCP-compatible) |
-| Persistence (planned) | GRDB.swift + SQLite FTS5 |
+- [x] Native macOS browser (AppKit + WKWebView)
+- [x] Multi-tab support with keyboard shortcuts
+- [x] **Agent HTTP API** (list, get, open, read, js, screenshot)
+- [x] **CLI tool** (`browser-ctl`)
+- [x] Bearer token authentication
+- [x] DNS rebinding defense
+- [x] Connection descriptor for auto-discovery
+- [ ] Tab sidebar (vertical tabs)
+- [ ] History / bookmarks / persistence
+- [ ] MCP protocol support
+- [ ] Content extraction (markdown)
+- [ ] Interactive element inspection (click, fill)
 
-## Product thesis
+## Requirements
 
-Existing browsers treat their state as private. If a coding agent needs to read a web page, it launches a headless Chromium instance, navigates with no auth, extracts, and tears down. Every page read is a fresh anonymous session.
-
-This browser makes its state programmable. The agent calls `browser_read_markdown` on the tab the user already has open. The page is already loaded, already authenticated, already at the right scroll position. The round-trip is <100ms.
-
-When reading a web page costs <100ms instead of 5 seconds, agents will do it more often. That makes them better at tasks that involve the web.
+- macOS 14+
+- Swift 5.9+
 
 ## License
 

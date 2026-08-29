@@ -1,20 +1,17 @@
 import AppKit
 import WebKit
 
-/// Manages a single browser window: tabs, navigation chrome, and web content.
+/// Manages a single browser window: navigation chrome, web content display.
+/// Tab state lives in the shared TabManager; this controller is the UI over it.
 @MainActor
 final class BrowserWindowController: NSWindowController {
 
-    // MARK: - State
+    // MARK: - Shared State
 
-    private var tabs: [BrowserTab] = []
-    private var selectedTabIndex: Int = -1
-    private var closedTabStack: [(url: URL?, index: Int)] = []
+    let tabManager: TabManager
 
-    private var currentTab: BrowserTab? {
-        guard selectedTabIndex >= 0, selectedTabIndex < tabs.count else { return nil }
-        return tabs[selectedTabIndex]
-    }
+    /// Track which tab is currently displayed in the view hierarchy.
+    private var displayedTabID: UUID?
 
     // MARK: - UI Components
 
@@ -31,7 +28,9 @@ final class BrowserWindowController: NSWindowController {
 
     // MARK: - Init
 
-    init() {
+    init(tabManager: TabManager) {
+        self.tabManager = tabManager
+
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -46,7 +45,15 @@ final class BrowserWindowController: NSWindowController {
 
         super.init(window: window)
         setupLayout()
-        newTab(nil)
+
+        // Sync display whenever TabManager selection changes (from UI or automation)
+        tabManager.onSelectionChanged = { [weak self] in
+            self?.syncDisplayedTab()
+        }
+
+        // Create first tab
+        let firstTab = tabManager.createTab()
+        tabManager.select(tab: firstTab)
     }
 
     @available(*, unavailable)
@@ -58,7 +65,6 @@ final class BrowserWindowController: NSWindowController {
         guard let contentView = window?.contentView else { return }
         contentView.wantsLayer = true
 
-        // Toolbar container (back/forward/reload/address bar)
         toolbarContainer.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(toolbarContainer)
 
@@ -66,7 +72,6 @@ final class BrowserWindowController: NSWindowController {
         setupAddressBar()
         setupProgressBar()
 
-        // Web content area
         webContentView.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(webContentView)
 
@@ -84,7 +89,6 @@ final class BrowserWindowController: NSWindowController {
     }
 
     private func setupNavigationButtons() {
-        // Back button
         backButton.image = NSImage(systemSymbolName: "chevron.left", accessibilityDescription: "Back")
         backButton.bezelStyle = .accessoryBarAction
         backButton.isBordered = false
@@ -93,7 +97,6 @@ final class BrowserWindowController: NSWindowController {
         backButton.translatesAutoresizingMaskIntoConstraints = false
         toolbarContainer.addSubview(backButton)
 
-        // Forward button
         forwardButton.image = NSImage(systemSymbolName: "chevron.right", accessibilityDescription: "Forward")
         forwardButton.bezelStyle = .accessoryBarAction
         forwardButton.isBordered = false
@@ -102,7 +105,6 @@ final class BrowserWindowController: NSWindowController {
         forwardButton.translatesAutoresizingMaskIntoConstraints = false
         toolbarContainer.addSubview(forwardButton)
 
-        // Reload button
         reloadButton.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "Reload")
         reloadButton.bezelStyle = .accessoryBarAction
         reloadButton.isBordered = false
@@ -158,65 +160,24 @@ final class BrowserWindowController: NSWindowController {
         ])
     }
 
-    // MARK: - Tab Management
+    // MARK: - Tab Display Sync
 
-    @objc func newTab(_ sender: Any?) {
-        let tab = BrowserTab()
-        tabs.append(tab)
+    /// Ensure the window shows the TabManager's currently selected tab.
+    func syncDisplayedTab() {
+        guard let activeTab = tabManager.activeTab else { return }
 
-        tab.onNewTabRequested = { [weak self] url in
-            self?.openURLInNewTab(url)
+        // Nothing to do if already showing this tab
+        if displayedTabID == activeTab.id { return }
+
+        // Remove previous webview
+        if let oldID = displayedTabID,
+           let oldTab = tabManager.tab(for: oldID) {
+            oldTab.webView.removeFromSuperview()
         }
-
-        selectTab(at: tabs.count - 1)
-
-        // Focus address bar for new empty tab
-        if sender != nil {
-            addressBar.focus()
-        }
-    }
-
-    @objc func closeCurrentTab(_ sender: Any?) {
-        guard selectedTabIndex >= 0, selectedTabIndex < tabs.count else { return }
-        let tab = tabs[selectedTabIndex]
-
-        closedTabStack.append((url: tab.url, index: selectedTabIndex))
-        tabs.remove(at: selectedTabIndex)
-
-        if tabs.isEmpty {
-            newTab(nil)
-        } else {
-            selectTab(at: min(selectedTabIndex, tabs.count - 1))
-        }
-    }
-
-    @objc func reopenClosedTab(_ sender: Any?) {
-        guard let closed = closedTabStack.popLast(), let url = closed.url else { return }
-        let tab = BrowserTab()
-        let insertIndex = min(closed.index, tabs.count)
-        tabs.insert(tab, at: insertIndex)
-
-        tab.onNewTabRequested = { [weak self] u in
-            self?.openURLInNewTab(u)
-        }
-
-        selectTab(at: insertIndex)
-        tab.load(url)
-    }
-
-    private func selectTab(at index: Int) {
-        guard index >= 0, index < tabs.count else { return }
-
-        // Remove current webview from hierarchy
-        if selectedTabIndex >= 0, selectedTabIndex < tabs.count {
-            tabs[selectedTabIndex].webView.removeFromSuperview()
-        }
-
-        selectedTabIndex = index
-        let tab = tabs[index]
 
         // Add new tab's webview
-        let wv = tab.webView
+        displayedTabID = activeTab.id
+        let wv = activeTab.webView
         wv.translatesAutoresizingMaskIntoConstraints = false
         webContentView.addSubview(wv)
         NSLayoutConstraint.activate([
@@ -227,77 +188,91 @@ final class BrowserWindowController: NSWindowController {
         ])
 
         updateUI()
-        observeProgress(for: tab)
+        observeProgress(for: activeTab)
     }
 
-    private func openURLInNewTab(_ url: URL) {
-        let tab = BrowserTab()
-        tabs.append(tab)
+    // MARK: - Tab Actions (Menu/Keyboard targets)
 
-        tab.onNewTabRequested = { [weak self] u in
-            self?.openURLInNewTab(u)
+    @objc func newTab(_ sender: Any?) {
+        let tab = tabManager.createTab()
+        tabManager.select(tab: tab)
+        syncDisplayedTab()
+
+        if sender != nil {
+            addressBar.focus()
+        }
+    }
+
+    @objc func closeCurrentTab(_ sender: Any?) {
+        tabManager.closeCurrentTab()
+
+        if tabManager.tabs.isEmpty {
+            let tab = tabManager.createTab()
+            tabManager.select(tab: tab)
         }
 
-        selectTab(at: tabs.count - 1)
-        tab.load(url)
+        syncDisplayedTab()
+    }
+
+    @objc func reopenClosedTab(_ sender: Any?) {
+        if let tab = tabManager.reopenClosedTab() {
+            tabManager.select(tab: tab)
+            syncDisplayedTab()
+        }
     }
 
     @objc func switchToTabByNumber(_ sender: NSMenuItem) {
-        let index = sender.tag - 1 // tag 1-9 -> index 0-8
+        let index = sender.tag - 1
         if index == 8 {
-            // Cmd+9 goes to last tab (browser convention)
-            selectTab(at: tabs.count - 1)
+            tabManager.selectTab(at: tabManager.tabs.count - 1)
         } else {
-            selectTab(at: index)
+            tabManager.selectTab(at: index)
         }
+        syncDisplayedTab()
     }
 
     @objc func selectNextTab(_ sender: Any?) {
-        guard !tabs.isEmpty else { return }
-        selectTab(at: (selectedTabIndex + 1) % tabs.count)
+        tabManager.selectNextTab()
+        syncDisplayedTab()
     }
 
     @objc func selectPreviousTab(_ sender: Any?) {
-        guard !tabs.isEmpty else { return }
-        selectTab(at: (selectedTabIndex - 1 + tabs.count) % tabs.count)
+        tabManager.selectPreviousTab()
+        syncDisplayedTab()
     }
 
     // MARK: - Navigation
 
     private func navigate(to input: String) {
-        guard let tab = currentTab else { return }
-
+        guard let tab = tabManager.activeTab else { return }
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
         if let url = URL(string: trimmed), url.scheme != nil, url.host != nil {
-            // Looks like a URL
             tab.load(url)
         } else if trimmed.contains(".") && !trimmed.contains(" ") {
-            // Looks like a domain (e.g. "github.com")
             if let url = URL(string: "https://\(trimmed)") {
                 tab.load(url)
             }
         } else {
-            // Search query
             tab.loadSearch(trimmed)
         }
     }
 
     @objc func goBack(_ sender: Any?) {
-        currentTab?.goBack()
+        tabManager.activeTab?.goBack()
     }
 
     @objc func goForward(_ sender: Any?) {
-        currentTab?.goForward()
+        tabManager.activeTab?.goForward()
     }
 
     @objc func reloadPage(_ sender: Any?) {
-        currentTab?.reload()
+        tabManager.activeTab?.reload()
     }
 
     @objc func hardReloadPage(_ sender: Any?) {
-        currentTab?.reloadFromOrigin()
+        tabManager.activeTab?.reloadFromOrigin()
     }
 
     @objc func focusAddressBar(_ sender: Any?) {
@@ -307,8 +282,7 @@ final class BrowserWindowController: NSWindowController {
     // MARK: - Find
 
     @objc func performFind(_ sender: Any?) {
-        // Use WKWebView's built-in find interaction
-        guard let tab = currentTab else { return }
+        guard let tab = tabManager.activeTab else { return }
 
         let alert = NSAlert()
         alert.messageText = "Find in Page"
@@ -330,31 +304,31 @@ final class BrowserWindowController: NSWindowController {
     // MARK: - Zoom
 
     @objc func zoomIn(_ sender: Any?) {
-        guard let tab = currentTab else { return }
+        guard let tab = tabManager.activeTab else { return }
         tab.setZoom(min(tab.zoomLevel + 0.1, 3.0))
     }
 
     @objc func zoomOut(_ sender: Any?) {
-        guard let tab = currentTab else { return }
+        guard let tab = tabManager.activeTab else { return }
         tab.setZoom(max(tab.zoomLevel - 0.1, 0.3))
     }
 
     @objc func resetZoom(_ sender: Any?) {
-        currentTab?.setZoom(1.0)
+        tabManager.activeTab?.setZoom(1.0)
     }
 
     // MARK: - UI Updates
 
     private func updateUI() {
-        guard let tab = currentTab else { return }
+        guard let tab = tabManager.activeTab else { return }
         addressBar.setURL(tab.url)
         backButton.isEnabled = tab.canGoBack
         forwardButton.isEnabled = tab.canGoForward
         window?.title = tab.title.isEmpty ? "Agent Browser" : tab.title
 
-        let tabCount = tabs.count
+        let tabCount = tabManager.tabs.count
         if tabCount > 1 {
-            window?.title = "[\(selectedTabIndex + 1)/\(tabCount)] " + (tab.title.isEmpty ? "Agent Browser" : tab.title)
+            window?.title = "[\((tabManager.selectedTabIndex) + 1)/\(tabCount)] " + (tab.title.isEmpty ? "Agent Browser" : tab.title)
         }
     }
 
@@ -366,8 +340,6 @@ final class BrowserWindowController: NSWindowController {
                 let progress = wv.estimatedProgress
                 self.progressBar.doubleValue = progress
                 self.progressBar.isHidden = progress >= 1.0
-
-                // Also update nav button state and title
                 self.updateUI()
             }
         }
