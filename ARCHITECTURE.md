@@ -832,3 +832,76 @@ When an agent interacts with the browser, the user sees what happened. Every age
 This is the inverse of headless browser automation, where the agent operates invisibly and the user trusts it blindly. Here, the browser is the agent's hands, and the user can watch them move. The user can also interrupt: if the agent is about to click something destructive, the user sees the action in the log and can close the tab or revoke the agent's token.
 
 This transparency is not an AI feature. It's a UI feature that makes agent automation trustworthy enough to actually use in production.
+
+---
+
+## 12. Interactive Automation Layer (v0.3.0)
+
+### Overview
+
+The interactive automation layer lets external agents inspect, identify, and interact with live DOM elements through the same API surface as tab/page operations. No CSS selectors required -- agents receive semantic element handles.
+
+### Architecture
+
+```
+automation-bridge.js (injected via WKUserScript in .defaultClient world)
+    ↓ evaluateJavaScript
+InteractiveAutomation.swift (routing + inspect + types)
+InteractiveActions.swift   (click/fill/press/select/wait implementation)
+    ↓ routeInteractive / routeInteractiveAsync
+BrowserAutomationService.swift (dispatch switch falls through to interactive router)
+    ↓
+AgentHTTPServer.swift (REST routes: /api/tabs/{id}/inspect, /click, /fill, etc.)
+```
+
+### Element Handle Design
+
+Element handles are 6-char hex strings prefixed with `el_` (e.g., `el_a1b2c3`). They are:
+- Injected as `data-agentbrowser-id` attributes on DOM elements during `inspect()`
+- Resolved via CSS attribute selector `[data-agentbrowser-id="el_xxx"]`
+- Scoped to a single inspect generation (stale handles detected via DOM presence check)
+- Never silently resolve to the wrong element -- if the DOM changes and the handle's element is gone, the operation fails with `ELEMENT_STALE`
+
+### Semantic Naming Algorithm
+
+Accessible name for each element follows this priority:
+1. `aria-label` attribute
+2. `aria-labelledby` -> resolved element text
+3. Associated `<label>` (via `for` attribute or wrapping)
+4. `placeholder` attribute
+5. `title` attribute
+6. `alt` text (for images)
+7. Visible `innerText` (truncated to 100 chars)
+8. `name` attribute (last resort)
+
+### Protocol Methods
+
+| Method | Params | Description |
+|---|---|---|
+| `page.inspect` | `id` | Return compact list of interactive elements with handles |
+| `page.click` | `id`, `elementId` | Click element (full mouse event sequence) |
+| `page.fill` | `id`, `elementId`, `value` | Fill input/textarea (React-compatible native setter) |
+| `page.press` | `id`, `key`, `elementId?` | Press keyboard key (Enter, Escape, Tab, etc.) |
+| `page.select` | `id`, `elementId`, `value` | Select dropdown option |
+| `page.wait` | `id`, `condition`, `value?`, `timeout?` | Wait for load/url/text/element |
+
+### Error Codes (new)
+
+`ELEMENT_NOT_FOUND`, `ELEMENT_STALE`, `ELEMENT_NOT_INTERACTABLE`, `UNSUPPORTED_ELEMENT`, `WAIT_TIMEOUT`, `NAVIGATION_FAILED`, `INVALID_ARGUMENT`
+
+### Framework Compatibility
+
+The `fill()` action uses the native value setter bypass to work with React, Vue, Angular:
+```js
+Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, value);
+el.dispatchEvent(new Event('input', { bubbles: true }));
+el.dispatchEvent(new Event('change', { bubbles: true }));
+```
+
+### Known Limitations
+
+- **V1 is top-level DOM only.** Same-origin iframes are not traversed. Cross-origin iframes are inaccessible by design (SOP).
+- **Shadow DOM:** Open shadow roots could be supported; closed shadow roots cannot. V1 does not traverse shadow DOM.
+- **Stale handles after SPA navigation:** A client-side route change may invalidate handles without a full page load. Re-inspect after any navigation.
+- **No network interception.** WebKit provides no CDP equivalent.
+- **WebGL/video elements** are not captured in screenshots.

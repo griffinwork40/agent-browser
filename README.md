@@ -10,6 +10,9 @@ When you browse the web normally, any external process on your machine can:
 
 - **List your open tabs** and their metadata
 - **Read page content** from the actual live DOM (not a re-fetch -- authenticated pages, client-rendered SPAs, dynamic content)
+- **Inspect interactive elements** semantically (buttons, links, inputs with accessible names, roles, and stable handles)
+- **Click, fill, press keys, select options** on live page elements
+- **Wait for conditions** (page load, URL change, element appearance, text content)
 - **Open URLs** in new tabs
 - **Execute JavaScript** in any tab
 - **Capture screenshots** of any tab
@@ -50,10 +53,44 @@ Connection info is written to `~/.config/agent-browser/connection.json`:
 ./browser-ctl read <tab-id>
 
 # Execute JavaScript
-./browser-ctl js <tab-id> 'return document.title'
+./browser-ctl eval <tab-id> 'return document.title'
 
 # Take a screenshot
 ./browser-ctl screenshot <tab-id> page.png
+
+# --- Interactive Automation ---
+
+# Inspect interactive elements (returns semantic handles)
+./browser-ctl inspect <tab-id>
+
+# Click an element by handle
+./browser-ctl click <tab-id> el_a1b2c3
+
+# Fill a text input
+./browser-ctl fill <tab-id> el_a1b2c3 "search query"
+
+# Press a key (Enter, Escape, Tab, etc.)
+./browser-ctl press <tab-id> Enter el_a1b2c3
+
+# Wait for page load, URL change, or element
+./browser-ctl wait <tab-id> --load
+./browser-ctl wait <tab-id> --url "github.com/search"
+./browser-ctl wait <tab-id> --text "Results"
+./browser-ctl wait <tab-id> --element "#results"
+```
+
+### Example Workflow
+
+```bash
+# Open GitHub, find search, type query, submit
+ID=$(./browser-ctl open https://github.com | python3 -c "import json,sys; print(json.load(sys.stdin)['id'])")
+./browser-ctl wait $ID --load
+./browser-ctl inspect $ID
+# Output: el_abc123  textbox  name="Search or jump to..."
+./browser-ctl fill $ID el_abc123 "WKWebView Swift"
+./browser-ctl press $ID Enter el_abc123
+./browser-ctl wait $ID --url "search"
+./browser-ctl read $ID
 ```
 
 ## HTTP API
@@ -69,6 +106,12 @@ All endpoints require `Authorization: Bearer <token>` (except `/health`).
 | `GET` | `/api/tabs/:id/read` | Read page content (live DOM text) |
 | `POST` | `/api/tabs/:id/js` | Execute JavaScript (`{"script": "..."}`) |
 | `GET` | `/api/tabs/:id/screenshot` | Capture viewport as PNG |
+| `GET/POST` | `/api/tabs/:id/inspect` | Inspect interactive elements |
+| `POST` | `/api/tabs/:id/click` | Click element (`{"elementId": "el_xxx"}`) |
+| `POST` | `/api/tabs/:id/fill` | Fill input (`{"elementId": "el_xxx", "value": "..."}`) |
+| `POST` | `/api/tabs/:id/press` | Press key (`{"key": "Enter", "elementId": "el_xxx"}`) |
+| `POST` | `/api/tabs/:id/select` | Select option (`{"elementId": "el_xxx", "value": "..."}`) |
+| `POST` | `/api/tabs/:id/wait` | Wait for condition (`{"condition": "url", "value": "..."}`) |
 
 ### Examples
 
@@ -124,15 +167,17 @@ The automation service and the UI both operate on the same `TabManager` and `Bro
 - [x] Native macOS browser (AppKit + WKWebView)
 - [x] Multi-tab support with keyboard shortcuts
 - [x] **Agent HTTP API** (list, get, open, read, js, screenshot)
-- [x] **CLI tool** (`browser-ctl`)
+- [x] **Interactive automation** (inspect, click, fill, press, select, wait)
+- [x] **Semantic element handles** (accessible names, roles, stable IDs)
+- [x] **React/Vue/Angular compatible** form fill (native setter bypass)
+- [x] **CLI tool** (`browser-ctl`) with full automation commands
 - [x] Bearer token authentication
 - [x] DNS rebinding defense
 - [x] Connection descriptor for auto-discovery
+- [x] Content extraction (markdown, text, HTML)
 - [ ] Tab sidebar (vertical tabs)
 - [ ] History / bookmarks / persistence
 - [ ] MCP protocol support
-- [ ] Content extraction (markdown)
-- [ ] Interactive element inspection (click, fill)
 
 ## Requirements
 

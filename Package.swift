@@ -9,7 +9,8 @@ let package = Package(
             name: "AgentBrowser",
             path: "Sources/AgentBrowser",
             resources: [
-                .process("Resources")
+                .process("Resources"),
+                .copy("WebKit/UserScripts")
             ]
         ),
         .testTarget(

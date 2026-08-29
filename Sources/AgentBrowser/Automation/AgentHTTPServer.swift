@@ -86,7 +86,7 @@ final class AgentHTTPServer {
 
         // Health (no auth)
         if path == "/health" {
-            respondRaw(conn, status: 200, json: ["status": "ok", "browser": "Agent Browser", "version": "0.2.0"]); return
+            respondRaw(conn, status: 200, json: ["status": "ok", "browser": "Agent Browser", "version": "0.3.0"]); return
         }
 
         // Auth
@@ -147,6 +147,32 @@ final class AgentHTTPServer {
                 return AgentRequest(method: "page.eval", params: ["id": AnyCodable(tabID), "script": AnyCodable(script)])
             case ("GET", "screenshot"):
                 return AgentRequest(method: "page.screenshot", params: ["id": AnyCodable(tabID)])
+            case (_, "inspect"):
+                return AgentRequest(method: "page.inspect", params: ["id": AnyCodable(tabID)])
+            case ("POST", "click"):
+                let elId = body?["elementId"] as? String ?? ""
+                return AgentRequest(method: "page.click", params: ["id": AnyCodable(tabID), "elementId": AnyCodable(elId)])
+            case ("POST", "fill"):
+                let elId = body?["elementId"] as? String ?? ""
+                let val = body?["value"] as? String ?? ""
+                return AgentRequest(method: "page.fill", params: ["id": AnyCodable(tabID), "elementId": AnyCodable(elId), "value": AnyCodable(val)])
+            case ("POST", "press"):
+                let elId = body?["elementId"] as? String
+                let key = body?["key"] as? String ?? ""
+                var p: [String: AnyCodable] = ["id": AnyCodable(tabID), "key": AnyCodable(key)]
+                if let elId { p["elementId"] = AnyCodable(elId) }
+                return AgentRequest(method: "page.press", params: p)
+            case ("POST", "select"):
+                let elId = body?["elementId"] as? String ?? ""
+                let val = body?["value"] as? String ?? ""
+                return AgentRequest(method: "page.select", params: ["id": AnyCodable(tabID), "elementId": AnyCodable(elId), "value": AnyCodable(val)])
+            case ("POST", "wait"):
+                let cond = body?["condition"] as? String ?? "load"
+                let val = body?["value"] as? String
+                let timeout = body?["timeout"] as? Double ?? 10.0
+                var p: [String: AnyCodable] = ["id": AnyCodable(tabID), "condition": AnyCodable(cond), "timeout": AnyCodable(timeout)]
+                if let val { p["value"] = AnyCodable(val) }
+                return AgentRequest(method: "page.wait", params: p)
             default:
                 return nil
             }
@@ -220,7 +246,7 @@ final class AgentHTTPServer {
         let dir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/agent-browser")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let desc: [String: Any] = ["url": "http://127.0.0.1:\(boundPort)", "token": token,
-                                    "pid": ProcessInfo.processInfo.processIdentifier, "version": "0.2.0"]
+                                    "pid": ProcessInfo.processInfo.processIdentifier, "version": "0.3.0"]
         let path = dir.appendingPathComponent("connection.json")
         if let data = try? JSONSerialization.data(withJSONObject: desc, options: [.prettyPrinted, .sortedKeys]) {
             try? data.write(to: path)

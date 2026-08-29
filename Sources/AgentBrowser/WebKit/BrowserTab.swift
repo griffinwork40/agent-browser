@@ -139,6 +139,46 @@ final class BrowserTab: Identifiable {
         // Allow inline media playback
         config.mediaTypesRequiringUserActionForPlayback = []
         config.allowsAirPlayForMediaPlayback = true
+
+        // Inject the automation bridge into every page for element inspection,
+        // click, fill, press, select, and wait operations. Runs in the
+        // .defaultClient content world so it's isolated from page scripts
+        // and exempt from CSP restrictions.
+        if let bridgeJS = Self.loadAutomationBridge() {
+            let script = WKUserScript(
+                source: bridgeJS,
+                injectionTime: .atDocumentEnd,
+                forMainFrameOnly: true,
+                in: .defaultClient
+            )
+            config.userContentController.addUserScript(script)
+        }
+
         return config
+    }
+
+    /// Load the automation-bridge.js from the bundle or filesystem.
+    /// Checks: SPM .copy bundle path, main bundle, working directory fallback.
+    private static func loadAutomationBridge() -> String? {
+        // SPM .copy preserves the subdirectory structure
+        if let url = Bundle.module.url(forResource: "automation-bridge", withExtension: "js",
+                                        subdirectory: "UserScripts") {
+            return try? String(contentsOf: url, encoding: .utf8)
+        }
+        if let url = Bundle.main.url(forResource: "automation-bridge", withExtension: "js") {
+            return try? String(contentsOf: url, encoding: .utf8)
+        }
+        // Development fallback: load from cwd-relative source path
+        let devPaths = [
+            "Sources/AgentBrowser/WebKit/UserScripts/automation-bridge.js",
+            "../Sources/AgentBrowser/WebKit/UserScripts/automation-bridge.js",
+        ]
+        for path in devPaths {
+            if FileManager.default.fileExists(atPath: path) {
+                return try? String(contentsOfFile: path, encoding: .utf8)
+            }
+        }
+        print("[BrowserTab] Warning: automation-bridge.js not found")
+        return nil
     }
 }

@@ -50,6 +50,13 @@ enum ErrorCode {
     static let extractionFailed = "EXTRACTION_FAILED"
     static let unknownMethod = "UNKNOWN_METHOD"
     static let badRequest = "BAD_REQUEST"
+    static let elementNotFound = "ELEMENT_NOT_FOUND"
+    static let elementStale = "ELEMENT_STALE"
+    static let elementNotInteractable = "ELEMENT_NOT_INTERACTABLE"
+    static let unsupportedElement = "UNSUPPORTED_ELEMENT"
+    static let waitTimeout = "WAIT_TIMEOUT"
+    static let navigationFailed = "NAVIGATION_FAILED"
+    static let invalidArgument = "INVALID_ARGUMENT"
 }
 
 // MARK: - AnyCodable (lightweight type-erased Codable)

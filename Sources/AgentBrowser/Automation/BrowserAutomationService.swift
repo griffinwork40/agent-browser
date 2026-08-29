@@ -65,6 +65,8 @@ final class BrowserAutomationService {
         case "__bad_request__":
             completion(.failure(code: ErrorCode.badRequest, message: "Invalid AgentRequest JSON"))
         default:
+            // Try interactive automation methods (inspect, click, fill, press, select, wait)
+            if routeInteractive(request.method, params: params, completion: completion) { return }
             completion(.failure(code: ErrorCode.unknownMethod, message: "Unknown method: \(request.method)"))
         }
     }
@@ -116,6 +118,10 @@ final class BrowserAutomationService {
             return await screenshotResponse(id: id)
 
         default:
+            // Try interactive automation methods (inspect, click, fill, press, select, wait)
+            if let response = await routeInteractiveAsync(request.method, params: params) {
+                return response
+            }
             return .failure(code: ErrorCode.unknownMethod, message: "Unknown method: \(request.method)")
         }
     }
@@ -717,7 +723,7 @@ final class BrowserAutomationService {
 
     // MARK: - Private Helpers
 
-    private func resolveTab(_ id: String) -> BrowserTab? {
+    func resolveTab(_ id: String) -> BrowserTab? {
         guard let uuid = UUID(uuidString: id) else { return nil }
         return tabManager.tab(for: uuid)
     }

@@ -168,32 +168,101 @@ case "${1:-help}" in
         agent_call "page.screenshot" "id=$2" | save_screenshot "$OUTPUT"
         ;;
 
+    inspect)
+        [ -n "${2:-}" ] || die "Usage: browser-ctl inspect <tab-id>"
+        agent_call "page.inspect" "id=$2" | format_result
+        ;;
+
+    click)
+        [ -n "${2:-}" ] && [ -n "${3:-}" ] || die "Usage: browser-ctl click <tab-id> <element-id>"
+        agent_call "page.click" "id=$2" "elementId=$3" | format_result
+        ;;
+
+    fill)
+        [ -n "${2:-}" ] && [ -n "${3:-}" ] && [ -n "${4:-}" ] || die "Usage: browser-ctl fill <tab-id> <element-id> <value>"
+        # Use structured protocol with proper JSON escaping for the value
+        ESCAPED_VAL=$(python3 -c "import json,sys; print(json.dumps(sys.argv[1]))" "$4")
+        curl -sS -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" \
+            -H "Host: ${URL##http://}" \
+            -d "{\"version\":1,\"method\":\"page.fill\",\"params\":{\"id\":\"$2\",\"elementId\":\"$3\",\"value\":$ESCAPED_VAL}}" \
+            "$URL/agent" | format_result
+        ;;
+
+    press)
+        [ -n "${2:-}" ] && [ -n "${3:-}" ] || die "Usage: browser-ctl press <tab-id> <key> [element-id]"
+        if [ -n "${4:-}" ]; then
+            agent_call "page.press" "id=$2" "key=$3" "elementId=$4" | format_result
+        else
+            agent_call "page.press" "id=$2" "key=$3" | format_result
+        fi
+        ;;
+
+    select)
+        [ -n "${2:-}" ] && [ -n "${3:-}" ] && [ -n "${4:-}" ] || die "Usage: browser-ctl select <tab-id> <element-id> <value>"
+        agent_call "page.select" "id=$2" "elementId=$3" "value=$4" | format_result
+        ;;
+
+    wait)
+        [ -n "${2:-}" ] || die "Usage: browser-ctl wait <tab-id> [--url <pattern>|--text <text>|--element <selector>|--load] [--timeout <secs>]"
+        TAB_ID="$2"
+        CONDITION="load"
+        WAIT_VALUE=""
+        TIMEOUT="10"
+        shift 2
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                --url) CONDITION="url"; WAIT_VALUE="${2:-}"; shift 2 ;;
+                --text) CONDITION="text"; WAIT_VALUE="${2:-}"; shift 2 ;;
+                --element) CONDITION="element"; WAIT_VALUE="${2:-}"; shift 2 ;;
+                --load) CONDITION="load"; shift ;;
+                --timeout) TIMEOUT="${2:-10}"; shift 2 ;;
+                *) die "Unknown wait option: $1" ;;
+            esac
+        done
+        ESCAPED_VAL=$(python3 -c "import json,sys; print(json.dumps(sys.argv[1]))" "$WAIT_VALUE")
+        curl -sS -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" \
+            -H "Host: ${URL##http://}" \
+            -d "{\"version\":1,\"method\":\"page.wait\",\"params\":{\"id\":\"$TAB_ID\",\"condition\":\"$CONDITION\",\"value\":$ESCAPED_VAL,\"timeout\":$TIMEOUT}}" \
+            "$URL/agent" | format_result
+        ;;
+
     help|--help|-h)
         cat <<'EOF'
 browser-ctl: Control a running Agent Browser from the terminal.
 
 Commands:
-  health                           Check if browser is running
-  tabs                             List all open tabs (JSON)
-  tab <id>                         Get details for a tab
-  open <url>                       Open URL in a new tab
-  read <id> [--text|--html]        Read page content (default: markdown)
-  eval <id> '<script>'             Execute JavaScript in a tab
-  screenshot <id> [file.png]       Save tab screenshot
+  health                                    Check if browser is running
+  tabs                                      List all open tabs (JSON)
+  tab <id>                                  Get details for a tab
+  open <url>                                Open URL in new tab
+  read <id> [--text|--html]                 Read page content (default: markdown)
+  eval <id> '<script>'                      Execute JavaScript in a tab
+  screenshot <id> [file.png]                Save tab screenshot
 
-All responses use the structured protocol:
-  {"ok": true, "result": ...}  or  {"ok": false, "error": {"code": "...", "message": "..."}}
+  inspect <id>                              Inspect interactive elements
+  click <id> <element-id>                   Click an element
+  fill <id> <element-id> <value>            Fill a text input
+  press <id> <key> [element-id]             Press a key (Enter, Escape, Tab, etc.)
+  select <id> <element-id> <value>          Select option in dropdown
+  wait <id> [--url P|--text T|--element S]  Wait for condition (default: --load)
+       [--timeout <secs>]                   (timeout default: 10s)
 
-Tab IDs are UUIDs. Get them from 'browser-ctl tabs'.
-Connection info: ~/.config/agent-browser/connection.json
+Workflow example:
+  ID=$(browser-ctl open https://github.com | python3 -c "import json,sys; print(json.load(sys.stdin)['id'])")
+  browser-ctl wait $ID --load
+  browser-ctl inspect $ID
+  # Find search field: el_abc123  role=textbox  name="Search"
+  browser-ctl fill $ID el_abc123 "WKWebView Swift"
+  browser-ctl press $ID Enter el_abc123
+  browser-ctl wait $ID --url "search"
+  browser-ctl read $ID
 
-Examples:
-  browser-ctl tabs
-  browser-ctl open https://github.com
-  browser-ctl read <id>                    # Markdown extraction
-  browser-ctl read <id> --text             # Raw innerText
-  browser-ctl eval <id> 'return document.title'
-  browser-ctl screenshot <id> page.png
+Element IDs (el_XXXXXX) come from 'inspect' and are valid until the next inspect.
+Tab IDs are UUIDs from 'tabs'. Connection: ~/.config/agent-browser/connection.json
 EOF
         ;;
 
