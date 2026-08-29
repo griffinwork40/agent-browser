@@ -1,0 +1,2 @@
+Agent Browser resources directory.
+JS injection scripts and content blocking rules will live here.
