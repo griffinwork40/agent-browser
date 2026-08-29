@@ -61,11 +61,37 @@ final class AgentHTTPServer {
     private func handleConnection(_ conn: NWConnection) {
         conn.start(queue: .main)
         conn.receive(minimumIncompleteLength: 1, maximumLength: 1_048_576) { [weak self] data, _, _, _ in
-            guard let self, let data, let raw = String(data: data, encoding: .utf8) else {
-                conn.cancel(); return
-            }
-            self.routeAndRespond(conn, raw: raw)
+            guard let self, let data else { conn.cancel(); return }
+            // URLSession and other HTTP clients may split headers and body
+            // across TCP segments. Buffer until the full body arrives.
+            self.bufferUntilComplete(conn, accumulated: data)
         }
+    }
+
+    /// Buffer HTTP data until Content-Length body bytes are received.
+    private func bufferUntilComplete(_ conn: NWConnection, accumulated: Data) {
+        guard let raw = String(data: accumulated, encoding: .utf8) else {
+            conn.cancel(); return
+        }
+        // Check if we have the full body based on Content-Length
+        if let headerEnd = raw.range(of: "\r\n\r\n") {
+            let headerPart = raw[raw.startIndex..<headerEnd.lowerBound]
+            let bodyStart = accumulated.count - raw[headerEnd.upperBound...].utf8.count
+            if let clLine = headerPart.split(separator: "\r\n")
+                .first(where: { $0.lowercased().hasPrefix("content-length:") }),
+               let cl = Int(clLine.split(separator: ":")[1].trimmingCharacters(in: .whitespaces)) {
+                let bodyReceived = accumulated.count - bodyStart
+                if bodyReceived < cl {
+                    // Need more data
+                    conn.receive(minimumIncompleteLength: 1, maximumLength: 1_048_576) { [weak self] data, _, _, _ in
+                        guard let self, let data else { conn.cancel(); return }
+                        self.bufferUntilComplete(conn, accumulated: accumulated + data)
+                    }
+                    return
+                }
+            }
+        }
+        routeAndRespond(conn, raw: raw)
     }
 
     // MARK: - Route and Respond

@@ -1,0 +1,100 @@
+import Foundation
+
+/// Browser call helpers for MCPTools.
+/// Converts browser API responses into MCP tool result content arrays.
+extension MCPTools {
+
+    /// Generic browser call: serialize result as JSON text.
+    func callBrowser(method: String, params: [String: Any] = [:]) -> ([[String: Any]], Bool) {
+        let (result, error) = BrowserClient.call(method: method, params: params)
+        if let error { return toolError(error) }
+        guard let result else { return textContent("OK") }
+        return textContent(jsonString(result))
+    }
+
+    /// Read: extract content field for cleaner output.
+    func callBrowserRead(params: [String: Any]) -> ([[String: Any]], Bool) {
+        let (result, error) = BrowserClient.call(method: "page.read", params: params)
+        if let error { return toolError(error) }
+        guard let dict = result as? [String: Any] else { return toolError("Unexpected response") }
+        let title = dict["title"] as? String ?? ""
+        let url = dict["url"] as? String ?? ""
+        let content = dict["content"] as? String ?? ""
+        let format = dict["format"] as? String ?? "markdown"
+        let text = "# \(title)\nURL: \(url)\nFormat: \(format)\n\n\(content)"
+        return textContent(text)
+    }
+
+    /// Inspect: format elements for agent readability.
+    func callBrowserInspect(params: [String: Any]) -> ([[String: Any]], Bool) {
+        let (result, error) = BrowserClient.call(method: "page.inspect", params: params)
+        if let error { return toolError(error) }
+        guard let dict = result as? [String: Any] else { return toolError("Unexpected response") }
+
+        let title = dict["title"] as? String ?? ""
+        let url = dict["url"] as? String ?? ""
+        let count = dict["elementCount"] as? Int ?? 0
+        let elements = dict["elements"] as? [[String: Any]] ?? []
+
+        var lines = ["Page: \(title)", "URL: \(url)", "Interactive elements: \(count)", ""]
+        for el in elements {
+            let id = el["id"] as? String ?? "?"
+            let tag = el["tag"] as? String ?? "?"
+            let role = el["role"] as? String ?? ""
+            let name = el["name"] as? String ?? ""
+            let text = (el["text"] as? String ?? "")
+            let truncText = text.count > 60 ? String(text.prefix(60)) + "..." : text
+            let ph = el["placeholder"] as? String ?? ""
+            let inputType = el["inputType"] as? String ?? ""
+            let href = el["href"] as? String ?? ""
+            let disabled = el["disabled"] as? Bool ?? false
+            let value = el["value"] as? String ?? ""
+
+            var parts = [id, tag]
+            if !role.isEmpty { parts.append("role=\(role)") }
+            let label = !name.isEmpty ? name : (!truncText.isEmpty ? truncText : ph)
+            if !label.isEmpty { parts.append("\"\(label)\"") }
+            if !inputType.isEmpty { parts.append("type=\(inputType)") }
+            if !value.isEmpty { parts.append("value=\"\(value)\"") }
+            if !href.isEmpty { parts.append("href=\(String(href.prefix(80)))") }
+            if disabled { parts.append("[disabled]") }
+            lines.append(parts.joined(separator: "  "))
+        }
+        return textContent(lines.joined(separator: "\n"))
+    }
+
+    /// Screenshot: return as MCP image content.
+    func callBrowserScreenshot(params: [String: Any]) -> ([[String: Any]], Bool) {
+        let (result, error) = BrowserClient.call(method: "page.screenshot", params: params)
+        if let error { return toolError(error) }
+        guard let dict = result as? [String: Any],
+              let base64 = dict["data"] as? String,
+              let width = dict["width"] as? Int,
+              let height = dict["height"] as? Int else {
+            return toolError("Failed to capture screenshot")
+        }
+        let content: [[String: Any]] = [
+            ["type": "text", "text": "Screenshot: \(width)x\(height) PNG"],
+            ["type": "image", "data": base64, "mimeType": "image/png"]
+        ]
+        return (content, false)
+    }
+
+    // MARK: - Internal Helpers
+
+    private func toolError(_ message: String) -> ([[String: Any]], Bool) {
+        ([["type": "text", "text": message]], true)
+    }
+
+    private func textContent(_ text: String) -> ([[String: Any]], Bool) {
+        ([["type": "text", "text": text]], false)
+    }
+
+    private func jsonString(_ value: Any) -> String {
+        guard let data = try? JSONSerialization.data(withJSONObject: value, options: [.prettyPrinted, .sortedKeys]),
+              let str = String(data: data, encoding: .utf8) else {
+            return String(describing: value)
+        }
+        return str
+    }
+}

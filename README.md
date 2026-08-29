@@ -131,36 +131,60 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" \
   http://127.0.0.1:8833/api/tabs/<id>/js
 ```
 
+## MCP (Model Context Protocol)
+
+Agent Browser includes a native MCP server (`agent-browser-mcp`) that lets Claude Code and other MCP-compatible agents control the browser.
+
+```bash
+# Quick setup for Claude Code -- add to .mcp.json:
+{
+  "mcpServers": {
+    "agent-browser": {
+      "command": "/path/to/agent-browser/.build/debug/agent-browser-mcp"
+    }
+  }
+}
+```
+
+The MCP adapter exposes 11 tools: `browser_tabs`, `browser_open`, `browser_read`, `browser_inspect`, `browser_click`, `browser_fill`, `browser_press`, `browser_select`, `browser_wait`, `browser_eval`, `browser_screenshot`.
+
+See [MCP.md](MCP.md) for full documentation, security model, and examples.
+
 ## Security
 
 - Server binds to **127.0.0.1 only** -- no network exposure
 - **Bearer token** authentication on every request (random 32-byte token)
 - **Host header validation** prevents DNS rebinding attacks
 - Token stored in `~/.config/agent-browser/connection.json` (mode 0600)
+- MCP adapter inherits the same auth -- connects via the local API
 
 ## Architecture
 
 ```
-External Agent (Claude Code, AFK, curl, etc.)
-    |
-    | HTTP + Bearer token
-    |
-AgentHTTPServer (NWListener on 127.0.0.1:8833)
-    |
-    | @MainActor dispatch
-    |
-BrowserAutomationService
-    |
-    | operates on live tab state
-    |
-TabManager --> [BrowserTab] --> WKWebView
-    ^                              |
-    |                              | KVO
-    +-- BrowserWindowController ---+
-        (UI: address bar, tabs, navigation)
+MCP Client (Claude Code, etc.)        CLI (browser-ctl)
+    |                                      |
+    | stdio JSON-RPC                       | HTTP + Bearer token
+    |                                      |
+agent-browser-mcp ----+                    |
+                      |                    |
+                      | HTTP + Bearer token|
+                      |                    |
+                AgentHTTPServer (NWListener on 127.0.0.1:8833)
+                      |
+                      | @MainActor dispatch
+                      |
+                BrowserAutomationService
+                      |
+                      | operates on live tab state
+                      |
+                TabManager --> [BrowserTab] --> WKWebView
+                    ^                              |
+                    |                              | KVO
+                    +-- BrowserWindowController ---+
+                        (UI: address bar, tabs, navigation)
 ```
 
-The automation service and the UI both operate on the same `TabManager` and `BrowserTab` instances. When an agent opens a tab, it appears in the browser window. When an agent reads a page, it reads from the same WKWebView the user is looking at.
+The MCP adapter, CLI, and HTTP API all operate on the same automation service and the same live tabs. No second browser. No headless engine.
 
 ## Status
 
@@ -171,13 +195,13 @@ The automation service and the UI both operate on the same `TabManager` and `Bro
 - [x] **Semantic element handles** (accessible names, roles, stable IDs)
 - [x] **React/Vue/Angular compatible** form fill (native setter bypass)
 - [x] **CLI tool** (`browser-ctl`) with full automation commands
+- [x] **MCP server** (`agent-browser-mcp`) for Claude Code and compatible agents
 - [x] Bearer token authentication
 - [x] DNS rebinding defense
 - [x] Connection descriptor for auto-discovery
 - [x] Content extraction (markdown, text, HTML)
 - [ ] Tab sidebar (vertical tabs)
 - [ ] History / bookmarks / persistence
-- [ ] MCP protocol support
 
 ## Requirements
 

@@ -13,9 +13,17 @@ let package = Package(
                 .copy("WebKit/UserScripts")
             ]
         ),
+        .executableTarget(
+            name: "agent-browser-mcp",
+            path: "Sources/AgentBrowserMCP"
+        ),
         .testTarget(
             name: "AgentBrowserTests",
             dependencies: ["AgentBrowser"]
+        ),
+        .testTarget(
+            name: "AgentBrowserMCPTests",
+            dependencies: ["agent-browser-mcp"]
         )
     ]
 )
