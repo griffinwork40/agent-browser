@@ -1,7 +1,4 @@
-import Testing
-
-@Test func projectCompiles() async throws {
-    // Phase 1: just verify the project compiles and links.
-    // Real tests arrive with the automation layer (Phase 5).
-    #expect(true)
-}
+// Individual test files:
+// - TabManagerTests.swift: tab identity, lifecycle, selection, lookup
+// - ProtocolTests.swift: request/response encoding, error codes, AnyCodable
+// - AutomationServiceTests.swift: dispatch routing, error handling, URL validation

@@ -16,7 +16,60 @@ final class BrowserAutomationService {
         self.tabManager = tabManager
     }
 
-    // MARK: - Dispatch
+    // MARK: - Callback-based Dispatch (for HTTP server)
+
+    /// Dispatch via completion handler. Avoids async/await so the main run loop
+    /// stays free for WKWebView's evaluateJavaScript callbacks. This is the
+    /// primary entry point for the HTTP server.
+    func dispatchWithCallback(_ request: AgentRequest, completion: @escaping (AgentResponse) -> Void) {
+        guard request.version == 1 else {
+            completion(.failure(code: ErrorCode.badRequest, message: "Unsupported protocol version: \(request.version)"))
+            return
+        }
+
+        let params = request.params?.mapValues(\.value) ?? [:]
+
+        switch request.method {
+        // Sync operations -- respond immediately
+        case "tabs.list":
+            completion(.success(listTabs()))
+        case "tabs.get":
+            guard let id = params["id"] as? String else {
+                completion(.failure(code: ErrorCode.invalidParams, message: "Missing 'id' parameter")); return
+            }
+            completion(getTabResponse(id: id))
+        case "tabs.open":
+            guard let url = params["url"] as? String else {
+                completion(.failure(code: ErrorCode.invalidParams, message: "Missing 'url' parameter")); return
+            }
+            completion(openURLResponse(url))
+
+        // Async operations -- use callback-based WKWebView APIs
+        case "page.read":
+            guard let id = params["id"] as? String else {
+                completion(.failure(code: ErrorCode.invalidParams, message: "Missing 'id' parameter")); return
+            }
+            let format = params["format"] as? String ?? "markdown"
+            readPageCallback(id: id, format: format, completion: completion)
+        case "page.eval":
+            guard let id = params["id"] as? String, let script = params["script"] as? String else {
+                completion(.failure(code: ErrorCode.invalidParams, message: "Missing 'id' or 'script' parameter")); return
+            }
+            evalJSCallback(id: id, script: script, completion: completion)
+        case "page.screenshot":
+            guard let id = params["id"] as? String else {
+                completion(.failure(code: ErrorCode.invalidParams, message: "Missing 'id' parameter")); return
+            }
+            screenshotCallback(id: id, completion: completion)
+
+        case "__bad_request__":
+            completion(.failure(code: ErrorCode.badRequest, message: "Invalid AgentRequest JSON"))
+        default:
+            completion(.failure(code: ErrorCode.unknownMethod, message: "Unknown method: \(request.method)"))
+        }
+    }
+
+    // MARK: - Async Dispatch (for tests and future MCP)
 
     /// Dispatch a structured protocol request. Returns a structured response.
     func dispatch(_ request: AgentRequest) async -> AgentResponse {
@@ -536,6 +589,132 @@ final class BrowserAutomationService {
     })()
     """;
 
+    // MARK: - Callback-based Async Operations
+
+    /// Read page content using callback-based JS evaluation.
+    private func readPageCallback(id: String, format: String, completion: @escaping (AgentResponse) -> Void) {
+        guard let tab = resolveTab(id) else {
+            completion(.failure(code: ErrorCode.tabNotFound, message: "No tab with id: \(id)")); return
+        }
+        let start = CFAbsoluteTimeGetCurrent()
+        let script: String
+        switch format {
+        case "html":
+            script = "document.documentElement ? document.documentElement.outerHTML : ''"
+        case "text":
+            script = "document.body ? document.body.innerText : ''"
+        default:
+            script = Self.markdownExtractionScript
+        }
+
+        let tabID = tab.id.uuidString
+        let tabTitle = tab.title
+        let tabURL = tab.url?.absoluteString
+        let fmt = format == "html" || format == "text" ? format : "markdown"
+
+        tab.webView.evaluateJavaScript(script) { result, error in
+            DispatchQueue.main.async {
+                let elapsed = CFAbsoluteTimeGetCurrent() - start
+                if let error {
+                    completion(.failure(code: ErrorCode.extractionFailed, message: error.localizedDescription)); return
+                }
+                let content = (result as? String) ?? ""
+                completion(.success(PageContent(
+                    id: tabID, title: tabTitle, url: tabURL,
+                    content: content, format: fmt,
+                    byteLength: content.utf8.count,
+                    extractionTime: (elapsed * 1000).rounded() / 1000
+                )))
+            }
+        }
+    }
+
+    /// Execute JS using callback-based API.
+    private func evalJSCallback(id: String, script: String, completion: @escaping (AgentResponse) -> Void) {
+        guard let tab = resolveTab(id) else {
+            completion(.failure(code: ErrorCode.tabNotFound, message: "No tab with id: \(id)")); return
+        }
+        let wrappedScript = """
+        (function() {
+            try {
+                var __r = (function() { \(script) })();
+                var __t = (typeof __r);
+                if (__r === undefined) return JSON.stringify({__v: null, __t: "undefined"});
+                if (__r === null) return JSON.stringify({__v: null, __t: "null"});
+                return JSON.stringify({__v: __r, __t: __t});
+            } catch(e) {
+                return JSON.stringify({__e: e.message || String(e)});
+            }
+        })()
+        """
+
+        let tabID = tab.id.uuidString
+        tab.webView.evaluateJavaScript(wrappedScript) { result, error in
+            // Dispatch back to main -- the callback may arrive on a non-main thread
+            DispatchQueue.main.async {
+                if let error {
+                    completion(.failure(code: ErrorCode.javaScriptError, message: error.localizedDescription)); return
+                }
+                guard let jsonString = result as? String,
+                      let data = jsonString.data(using: .utf8),
+                      let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                    completion(.success(JSEvalResult(id: tabID, value: String(describing: result), type: "unknown", error: nil)))
+                    return
+                }
+
+                if let err = dict["__e"] as? String {
+                    completion(.success(JSEvalResult(id: tabID, value: nil, type: "error", error: err))); return
+                }
+
+                let type = dict["__t"] as? String ?? "unknown"
+                let rawValue = dict["__v"]
+                // Re-serialize just the value to JSON. Wrap in array since
+                // JSONSerialization requires a top-level array or dictionary.
+                let valueJSON: String?
+                if rawValue == nil || rawValue is NSNull {
+                    valueJSON = "null"
+                } else if let arr = try? JSONSerialization.data(withJSONObject: [rawValue!]),
+                          let arrStr = String(data: arr, encoding: .utf8) {
+                    // Strip the wrapping brackets: "[\"hello\"]" -> "\"hello\""
+                    let trimmed = arrStr.dropFirst().dropLast()
+                    valueJSON = String(trimmed)
+                } else {
+                    valueJSON = String(describing: rawValue)
+                }
+
+                completion(.success(JSEvalResult(id: tabID, value: valueJSON, type: type, error: nil)))
+            }
+        }
+    }
+
+    /// Screenshot using callback-based API.
+    private func screenshotCallback(id: String, completion: @escaping (AgentResponse) -> Void) {
+        guard let tab = resolveTab(id) else {
+            completion(.failure(code: ErrorCode.tabNotFound, message: "No tab with id: \(id)")); return
+        }
+
+        let tabID = tab.id.uuidString
+        let config = WKSnapshotConfiguration()
+        config.afterScreenUpdates = true
+        tab.webView.takeSnapshot(with: config) { image, error in
+            DispatchQueue.main.async {
+                if let error {
+                    completion(.failure(code: ErrorCode.screenshotFailed, message: error.localizedDescription)); return
+                }
+                guard let image,
+                      let tiff = image.tiffRepresentation,
+                      let bitmap = NSBitmapImageRep(data: tiff),
+                      let pngData = bitmap.representation(using: .png, properties: [:]) else {
+                    completion(.failure(code: ErrorCode.screenshotFailed, message: "Failed to encode PNG")); return
+                }
+                completion(.success(ScreenshotInfo(
+                    id: tabID, width: Int(image.size.width), height: Int(image.size.height),
+                    byteLength: pngData.count, encoding: "base64", data: pngData.base64EncodedString()
+                )))
+            }
+        }
+    }
+
     // MARK: - Private Helpers
 
     private func resolveTab(_ id: String) -> BrowserTab? {
@@ -544,15 +723,21 @@ final class BrowserAutomationService {
     }
 
     /// Evaluate JS using the callback API (NOT the async overload which crashes on void returns).
+    /// Includes a 10-second timeout to prevent indefinite hangs when the WKWebView is in a
+    /// state that prevents callback delivery (zero frame, not in hierarchy, process suspended).
     private func evaluateJS(on webView: WKWebView, script: String) async throws -> Any? {
-        try await withCheckedThrowingContinuation { cont in
+        print("[evaluateJS] Starting eval, frame=\(webView.frame), superview=\(webView.superview != nil)")
+        return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Any?, Error>) in
+            print("[evaluateJS] About to call evaluateJavaScript")
             webView.evaluateJavaScript(script) { result, error in
+                print("[evaluateJS] Callback received: result=\(String(describing: result)), error=\(String(describing: error))")
                 if let error {
                     cont.resume(throwing: error)
                 } else {
                     cont.resume(returning: result)
                 }
             }
+            print("[evaluateJS] evaluateJavaScript called, waiting for callback")
         }
     }
 }
