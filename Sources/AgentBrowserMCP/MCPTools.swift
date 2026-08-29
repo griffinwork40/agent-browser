@@ -18,16 +18,24 @@ struct MCPTools {
                  required: ["url"]),
 
             tool("browser_read",
-                 desc: "Read the current live page content from a tab. Returns the rendered DOM content, not cached HTML. Works on authenticated pages and SPAs.",
+                 desc: "Read page content from a tab. Default mode ('main') returns bounded main-content markdown (~16K chars) with nav/footer/boilerplate stripped. Use mode='summary' for a compact overview (~6K), or mode='full' for uncapped output. Pass query to focus extraction on matching sections. Works on authenticated pages and SPAs.",
                  props: [
                     "tab_id": prop("string", "Tab ID from browser_tabs"),
-                    "format": prop("string", "Output format: 'markdown' (default), 'text', or 'html'")
+                    "format": prop("string", "Output format: 'markdown' (default), 'text', or 'html'"),
+                    "mode": prop("string", "Extraction mode: 'summary' (bounded ~6K), 'main' (default, bounded ~16K), or 'full' (uncapped). Only applies when format=markdown."),
+                    "query": prop("string", "Focus extraction on sections matching this query. Headings and paragraphs containing query terms are prioritized."),
+                    "budget": prop("integer", "Override the character budget for summary/main modes.")
                  ],
                  required: ["tab_id"]),
 
             tool("browser_inspect",
-                 desc: "Inspect interactive elements on a live page. Returns semantic element handles (el_XXXXXX) with accessible names, roles, and state. Use these handles with browser_click, browser_fill, browser_press. Handles become stale after navigation -- re-inspect if the page changes.",
-                 props: ["tab_id": prop("string", "Tab ID from browser_tabs")],
+                 desc: "Inspect interactive elements on a live page. Returns the top ~30 most relevant elements by default (inputs, buttons, primary links), ranked by viewport position, semantic role, and accessibility. Returns element handles (el_XXXXXX) usable with browser_click/fill/press. Pass mode='all' for uncapped output, mode='forms' for inputs only, or mode='navigation' for links. Use query to find specific elements by name/text. Use limit to control how many elements are returned.",
+                 props: [
+                    "tab_id": prop("string", "Tab ID from browser_tabs"),
+                    "mode": prop("string", "Filter: 'interactive' (default, top elements), 'forms' (inputs/selects), 'navigation' (links/tabs), 'all' (uncapped)"),
+                    "limit": prop("integer", "Max elements to return (default: 30). Set to 0 for unlimited."),
+                    "query": prop("string", "Filter/boost elements matching this text in name, placeholder, href, or role.")
+                 ],
                  required: ["tab_id"]),
 
             tool("browser_click",
@@ -102,10 +110,17 @@ struct MCPTools {
             guard let tabId = args["tab_id"] as? String else { return toolError("Missing required argument: tab_id") }
             var params: [String: Any] = ["id": tabId]
             if let fmt = args["format"] as? String { params["format"] = fmt }
+            if let mode = args["mode"] as? String { params["mode"] = mode }
+            if let query = args["query"] as? String { params["query"] = query }
+            if let budget = args["budget"] as? Int { params["budget"] = budget }
             return callBrowserRead(params: params)
         case "browser_inspect":
             guard let tabId = args["tab_id"] as? String else { return toolError("Missing required argument: tab_id") }
-            return callBrowserInspect(params: ["id": tabId])
+            var params: [String: Any] = ["id": tabId]
+            if let mode = args["mode"] as? String { params["mode"] = mode }
+            if let limit = args["limit"] as? Int { params["limit"] = limit }
+            if let query = args["query"] as? String { params["query"] = query }
+            return callBrowserInspect(params: params)
         case "browser_click":
             guard let tabId = args["tab_id"] as? String, let elId = args["element_id"] as? String else {
                 return toolError("Missing required arguments: tab_id, element_id")

@@ -50,7 +50,10 @@ final class BrowserAutomationService {
                 completion(.failure(code: ErrorCode.invalidParams, message: "Missing 'id' parameter")); return
             }
             let format = params["format"] as? String ?? "markdown"
-            readPageCallback(id: id, format: format, completion: completion)
+            let mode = params["mode"] as? String
+            let query = params["query"] as? String
+            let budget = params["budget"] as? Int
+            readPageCallback(id: id, format: format, mode: mode, query: query, budget: budget, completion: completion)
         case "page.eval":
             guard let id = params["id"] as? String, let script = params["script"] as? String else {
                 completion(.failure(code: ErrorCode.invalidParams, message: "Missing 'id' or 'script' parameter")); return
@@ -102,7 +105,10 @@ final class BrowserAutomationService {
                 return .failure(code: ErrorCode.invalidParams, message: "Missing 'id' parameter")
             }
             let format = params["format"] as? String ?? "markdown"
-            return await readPageResponse(id: id, format: format)
+            let mode = params["mode"] as? String
+            let query = params["query"] as? String
+            let budget = params["budget"] as? Int
+            return await readPageResponse(id: id, format: format, mode: mode, query: query, budget: budget)
 
         case "page.eval":
             guard let id = params["id"] as? String,
@@ -158,7 +164,9 @@ final class BrowserAutomationService {
         let url: String?
         let content: String
         let format: String        // "markdown", "text", or "html"
-        let byteLength: Int
+        let mode: String?         // "summary", "main", "full" (nil for text/html)
+        let characters: Int
+        let truncated: Bool
         let extractionTime: Double // seconds
     }
 
@@ -247,7 +255,9 @@ final class BrowserAutomationService {
     ///
     /// Handles: empty pages (returns empty content), loading pages (returns partial + isLoading flag),
     /// JS-heavy SPAs (reads the live rendered DOM, not source HTML).
-    private func readPageResponse(id: String, format: String) async -> AgentResponse {
+    private func readPageResponse(
+        id: String, format: String, mode: String?, query: String?, budget: Int?
+    ) async -> AgentResponse {
         guard let tab = resolveTab(id) else {
             return .failure(code: ErrorCode.tabNotFound, message: "No tab with id: \(id)")
         }
@@ -255,25 +265,20 @@ final class BrowserAutomationService {
         let start = CFAbsoluteTimeGetCurrent()
 
         do {
-            let content: String
-            switch format {
-            case "html":
-                content = try await extractHTML(from: tab.webView)
-            case "text":
-                content = try await extractText(from: tab.webView)
-            default: // "markdown"
-                content = try await extractMarkdown(from: tab.webView)
-            }
-
+            let result = try await extractContent(
+                from: tab.webView, format: format, mode: mode, query: query, budget: budget
+            )
             let elapsed = CFAbsoluteTimeGetCurrent() - start
             return .success(PageContent(
                 id: tab.id.uuidString,
                 title: tab.title,
                 url: tab.url?.absoluteString,
-                content: content,
-                format: format == "html" || format == "text" ? format : "markdown",
-                byteLength: content.utf8.count,
-                extractionTime: (elapsed * 1000).rounded() / 1000 // 3 decimal places
+                content: result.content,
+                format: result.format,
+                mode: result.mode,
+                characters: result.content.count,
+                truncated: result.truncated,
+                extractionTime: (elapsed * 1000).rounded() / 1000
             ))
         } catch {
             return .failure(code: ErrorCode.extractionFailed, message: error.localizedDescription)
@@ -388,240 +393,123 @@ final class BrowserAutomationService {
 
     // MARK: - Content Extraction
 
-    /// Extract visible text via document.body.innerText.
-    private func extractText(from webView: WKWebView) async throws -> String {
-        let script = "document.body ? document.body.innerText : ''"
-        return try await evaluateJS(on: webView, script: script) as? String ?? ""
+    struct ExtractedContent {
+        let content: String
+        let format: String
+        let mode: String?
+        let truncated: Bool
     }
 
-    /// Extract full HTML.
-    private func extractHTML(from webView: WKWebView) async throws -> String {
-        let script = "document.documentElement ? document.documentElement.outerHTML : ''"
-        return try await evaluateJS(on: webView, script: script) as? String ?? ""
+    /// Unified content extraction with mode/query/budget support.
+    private func extractContent(
+        from webView: WKWebView, format: String, mode: String?, query: String?, budget: Int?
+    ) async throws -> ExtractedContent {
+        switch format {
+        case "html":
+            let script = "document.documentElement ? document.documentElement.outerHTML : ''"
+            let content = try await evaluateJS(on: webView, script: script) as? String ?? ""
+            return ExtractedContent(content: content, format: "html", mode: nil, truncated: false)
+        case "text":
+            let script = "document.body ? document.body.innerText : ''"
+            let content = try await evaluateJS(on: webView, script: script) as? String ?? ""
+            return ExtractedContent(content: content, format: "text", mode: nil, truncated: false)
+        default: // "markdown"
+            let readMode = ContentExtraction.ReadMode(rawValue: mode ?? "main")
+                ?? .main
+            let effectiveBudget = budget ?? ContentExtraction.defaultBudget(for: readMode)
+
+            let script: String
+            switch readMode {
+            case .summary:
+                script = ContentExtraction.summaryScript(budget: effectiveBudget, query: query)
+            case .main:
+                script = ContentExtraction.mainContentScript(budget: effectiveBudget, query: query)
+            case .full:
+                script = ContentExtraction.fullMarkdownScript
+            case .text, .html:
+                script = ContentExtraction.fullMarkdownScript
+            }
+
+            if readMode == .full {
+                let content = try await evaluateJS(on: webView, script: script) as? String ?? ""
+                return ExtractedContent(content: content, format: "markdown", mode: "full", truncated: false)
+            }
+
+            // summary and main modes return JSON with metadata
+            let raw = try await evaluateJS(on: webView, script: script)
+            if let jsonString = raw as? String,
+               let data = jsonString.data(using: .utf8),
+               let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                let content = dict["content"] as? String ?? ""
+                let truncated = dict["truncated"] as? Bool ?? false
+                return ExtractedContent(
+                    content: content, format: "markdown",
+                    mode: readMode.rawValue, truncated: truncated
+                )
+            }
+            let content = (raw as? String) ?? ""
+            return ExtractedContent(content: content, format: "markdown", mode: readMode.rawValue, truncated: false)
+        }
     }
-
-    /// Extract a lightweight Markdown representation from the live DOM.
-    ///
-    /// Strategy: injected JS walks the DOM tree and converts semantic elements
-    /// (headings, paragraphs, links, lists, tables, code blocks, images) into
-    /// Markdown. This runs against the RENDERED DOM -- it sees client-rendered
-    /// SPA content, authenticated pages, and dynamic modifications.
-    ///
-    /// This is NOT a full Readability extraction. It's a pragmatic first pass
-    /// that handles the 80% case: article-like pages, documentation, dashboards,
-    /// landing pages, search results.
-    private func extractMarkdown(from webView: WKWebView) async throws -> String {
-        let script = Self.markdownExtractionScript
-        let raw = try await evaluateJS(on: webView, script: script)
-        return (raw as? String) ?? ""
-    }
-
-    /// Injected JS for markdown extraction.
-    ///
-    /// Design:
-    /// - Walks the RENDERED DOM (sees SPA content, auth'd pages, dynamic state)
-    /// - Uses innerText as the base (already excludes hidden elements, scripts, styles)
-    /// - Overlays structural markdown for headings, links, lists, code, tables
-    /// - Falls back gracefully: empty pages return "", loading pages return partial content
-    /// - Does not try to be Readability -- prefers useful-now over perfect-later
-    private static let markdownExtractionScript: String = """
-    (function() {
-        if (!document.body) return '';
-        var out = [];
-        var title = document.title || '';
-
-        // Find main content root. Prefer semantic containers, fall back to body.
-        var root = document.querySelector('main, article, [role="main"]') || document.body;
-
-        var SKIP = new Set(['script','style','noscript','svg','template','link','meta']);
-
-        function hidden(el) {
-            // Lightweight visibility check. Avoids getComputedStyle overhead for most elements.
-            // Check display/visibility only on elements that commonly hide content.
-            if (el.hidden) return true;
-            var s = el.style;
-            if (s && (s.display === 'none' || s.visibility === 'hidden')) return true;
-            return false;
-        }
-
-        function txt(el) {
-            return (el.innerText || el.textContent || '').replace(/[ \\t]+/g, ' ').trim();
-        }
-
-        function absURL(href) {
-            if (!href) return '';
-            try { return new URL(href, document.baseURI).href; } catch(e) { return href; }
-        }
-
-        function walk(node) {
-            if (node.nodeType === 3) { // TEXT_NODE
-                var t = node.textContent;
-                if (t && t.trim()) out.push(t);
-                return;
-            }
-            if (node.nodeType !== 1) return;
-            var tag = node.tagName.toLowerCase();
-            if (SKIP.has(tag)) return;
-            if (hidden(node)) return;
-
-            switch(tag) {
-            case 'h1': case 'h2': case 'h3': case 'h4': case 'h5': case 'h6':
-                var lvl = tag[1];
-                var prefix = '#'.repeat(parseInt(lvl));
-                out.push('\\n' + prefix + ' ' + txt(node) + '\\n');
-                return;
-
-            case 'p':
-                out.push('\\n');
-                for (var c of node.childNodes) walk(c);
-                out.push('\\n');
-                return;
-
-            case 'a':
-                var href = node.getAttribute('href') || '';
-                var atxt = txt(node);
-                if (atxt && href && !href.startsWith('javascript:') && !href.startsWith('#')) {
-                    out.push('[' + atxt + '](' + absURL(href) + ')');
-                } else if (atxt) {
-                    out.push(atxt);
-                }
-                return;
-
-            case 'img':
-                var alt = node.getAttribute('alt') || '';
-                var src = node.getAttribute('src') || '';
-                if (src) out.push('![' + alt + '](' + absURL(src) + ')');
-                return;
-
-            case 'strong': case 'b':
-                var st = txt(node);
-                if (st) out.push('**' + st + '**');
-                return;
-            case 'em': case 'i':
-                var et = txt(node);
-                if (et) out.push('*' + et + '*');
-                return;
-
-            case 'code':
-                if (node.parentElement && node.parentElement.tagName === 'PRE') break;
-                var ct = node.textContent || '';
-                if (ct.trim()) out.push('`' + ct.trim() + '`');
-                return;
-
-            case 'pre':
-                var codeEl = node.querySelector('code');
-                var lang = '';
-                if (codeEl) {
-                    var m = (codeEl.className || '').match(/language-(\\w+)/);
-                    if (m) lang = m[1];
-                }
-                out.push('\\n```' + lang + '\\n' + (node.textContent || '').trim() + '\\n```\\n');
-                return;
-
-            case 'blockquote':
-                txt(node).split('\\n').forEach(function(l) { out.push('\\n> ' + l.trim()); });
-                out.push('\\n');
-                return;
-
-            case 'ul':
-                out.push('\\n');
-                Array.from(node.children).forEach(function(li) {
-                    if (li.tagName === 'LI') out.push('- ' + txt(li) + '\\n');
-                });
-                return;
-
-            case 'ol':
-                out.push('\\n');
-                var i = 1;
-                Array.from(node.children).forEach(function(li) {
-                    if (li.tagName === 'LI') { out.push(i + '. ' + txt(li) + '\\n'); i++; }
-                });
-                return;
-
-            case 'table':
-                out.push('\\n');
-                var rows = node.querySelectorAll('tr');
-                var first = true;
-                rows.forEach(function(tr) {
-                    var cells = tr.querySelectorAll('th, td');
-                    if (cells.length === 0) return;
-                    var line = '| ' + Array.from(cells).map(function(c) { return txt(c); }).join(' | ') + ' |';
-                    out.push(line + '\\n');
-                    if (first) {
-                        out.push('|' + Array.from(cells).map(function() { return '---'; }).join('|') + '|\\n');
-                        first = false;
-                    }
-                });
-                out.push('\\n');
-                return;
-
-            case 'hr':
-                out.push('\\n---\\n');
-                return;
-
-            case 'br':
-                out.push('\\n');
-                return;
-
-            // Layout containers: recurse but add line breaks around block-level ones
-            case 'div': case 'section': case 'main': case 'article': case 'aside':
-            case 'details': case 'summary': case 'figure': case 'figcaption':
-                out.push('\\n');
-                for (var ch of node.childNodes) walk(ch);
-                out.push('\\n');
-                return;
-
-            // Table internals, form elements, spans -- just recurse
-            default:
-                for (var child of node.childNodes) walk(child);
-                return;
-            }
-
-            // Fallthrough from code-inside-pre break
-            for (var fb of node.childNodes) walk(fb);
-        }
-
-        walk(root);
-
-        var result = out.join('')
-            .replace(/[ \\t]*\\n/g, '\\n')
-            .replace(/\\n{3,}/g, '\\n\\n')
-            .trim();
-
-        // Prepend title
-        if (title) {
-            // Don't duplicate if the content already starts with the title as h1
-            if (!result.startsWith('# ' + title)) {
-                result = '# ' + title + '\\n\\n' + result;
-            }
-        }
-
-        return result || '(empty page)';
-    })()
-    """;
 
     // MARK: - Callback-based Async Operations
 
     /// Read page content using callback-based JS evaluation.
-    private func readPageCallback(id: String, format: String, completion: @escaping (AgentResponse) -> Void) {
+    private func readPageCallback(
+        id: String, format: String, mode: String?, query: String?, budget: Int?,
+        completion: @escaping (AgentResponse) -> Void
+    ) {
         guard let tab = resolveTab(id) else {
             completion(.failure(code: ErrorCode.tabNotFound, message: "No tab with id: \(id)")); return
         }
         let start = CFAbsoluteTimeGetCurrent()
+
+        // For non-markdown formats, use simple extraction
+        if format == "html" || format == "text" {
+            let script = format == "html"
+                ? "document.documentElement ? document.documentElement.outerHTML : ''"
+                : "document.body ? document.body.innerText : ''"
+            let tabID = tab.id.uuidString
+            let tabTitle = tab.title
+            let tabURL = tab.url?.absoluteString
+            tab.webView.evaluateJavaScript(script) { result, error in
+                DispatchQueue.main.async {
+                    let elapsed = CFAbsoluteTimeGetCurrent() - start
+                    if let error {
+                        completion(.failure(code: ErrorCode.extractionFailed, message: error.localizedDescription)); return
+                    }
+                    let content = (result as? String) ?? ""
+                    completion(.success(PageContent(
+                        id: tabID, title: tabTitle, url: tabURL,
+                        content: content, format: format, mode: nil,
+                        characters: content.count, truncated: false,
+                        extractionTime: (elapsed * 1000).rounded() / 1000
+                    )))
+                }
+            }
+            return
+        }
+
+        // Markdown: use bounded extraction
+        let readMode = ContentExtraction.ReadMode(rawValue: mode ?? "main") ?? .main
+        let effectiveBudget = budget ?? ContentExtraction.defaultBudget(for: readMode)
+
         let script: String
-        switch format {
-        case "html":
-            script = "document.documentElement ? document.documentElement.outerHTML : ''"
-        case "text":
-            script = "document.body ? document.body.innerText : ''"
-        default:
-            script = Self.markdownExtractionScript
+        switch readMode {
+        case .summary:
+            script = ContentExtraction.summaryScript(budget: effectiveBudget, query: query)
+        case .main:
+            script = ContentExtraction.mainContentScript(budget: effectiveBudget, query: query)
+        case .full:
+            script = ContentExtraction.fullMarkdownScript
+        case .text, .html:
+            script = ContentExtraction.fullMarkdownScript
         }
 
         let tabID = tab.id.uuidString
         let tabTitle = tab.title
         let tabURL = tab.url?.absoluteString
-        let fmt = format == "html" || format == "text" ? format : "markdown"
+        let isFull = readMode == .full
 
         tab.webView.evaluateJavaScript(script) { result, error in
             DispatchQueue.main.async {
@@ -629,13 +517,39 @@ final class BrowserAutomationService {
                 if let error {
                     completion(.failure(code: ErrorCode.extractionFailed, message: error.localizedDescription)); return
                 }
-                let content = (result as? String) ?? ""
-                completion(.success(PageContent(
-                    id: tabID, title: tabTitle, url: tabURL,
-                    content: content, format: fmt,
-                    byteLength: content.utf8.count,
-                    extractionTime: (elapsed * 1000).rounded() / 1000
-                )))
+
+                if isFull {
+                    let content = (result as? String) ?? ""
+                    completion(.success(PageContent(
+                        id: tabID, title: tabTitle, url: tabURL,
+                        content: content, format: "markdown", mode: "full",
+                        characters: content.count, truncated: false,
+                        extractionTime: (elapsed * 1000).rounded() / 1000
+                    )))
+                    return
+                }
+
+                // Parse JSON result from summary/main scripts
+                if let jsonString = result as? String,
+                   let data = jsonString.data(using: .utf8),
+                   let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                    let content = dict["content"] as? String ?? ""
+                    let truncated = dict["truncated"] as? Bool ?? false
+                    completion(.success(PageContent(
+                        id: tabID, title: tabTitle, url: tabURL,
+                        content: content, format: "markdown", mode: readMode.rawValue,
+                        characters: content.count, truncated: truncated,
+                        extractionTime: (elapsed * 1000).rounded() / 1000
+                    )))
+                } else {
+                    let content = (result as? String) ?? ""
+                    completion(.success(PageContent(
+                        id: tabID, title: tabTitle, url: tabURL,
+                        content: content, format: "markdown", mode: readMode.rawValue,
+                        characters: content.count, truncated: false,
+                        extractionTime: (elapsed * 1000).rounded() / 1000
+                    )))
+                }
             }
         }
     }

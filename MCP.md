@@ -74,8 +74,8 @@ Spawn `agent-browser-mcp` as a subprocess. Communicate via stdin/stdout using JS
 |---|---|
 | `browser_tabs` | List all open tabs with IDs, titles, URLs, loading state |
 | `browser_open` | Open a URL in a new visible tab |
-| `browser_read` | Read live page content (markdown, text, or HTML) |
-| `browser_inspect` | Inspect interactive elements with semantic handles |
+| `browser_read` | Read page content. Default `mode=main` returns bounded ~16K chars with boilerplate stripped. `mode=summary` for ~6K, `mode=full` for uncapped. Pass `query` to focus on matching sections. |
+| `browser_inspect` | Inspect interactive elements. Default returns top ~30 ranked by relevance. `mode=all` for uncapped, `mode=forms` for inputs, `mode=navigation` for links. `query` filters by text. |
 | `browser_click` | Click an element by handle |
 | `browser_fill` | Fill a text input (React/Vue/Angular compatible) |
 | `browser_press` | Press a keyboard key (Enter, Escape, Tab, etc.) |
@@ -83,6 +83,15 @@ Spawn `agent-browser-mcp` as a subprocess. Communicate via stdin/stdout using JS
 | `browser_wait` | Wait for load, URL change, text, or element |
 | `browser_eval` | Execute JavaScript (privileged) |
 | `browser_screenshot` | Capture tab as PNG image |
+
+## Token Efficiency
+
+By default, both `browser_inspect` and `browser_read` return bounded output optimized for agent context windows:
+
+- **`browser_inspect`** returns the top ~30 elements ranked by relevance (viewport position, semantic role, accessibility name). On a GitHub repo page this is ~16KB instead of ~197KB. Use `mode=all` and `limit=0` only when the default view is insufficient.
+- **`browser_read`** returns main content with nav/footer/boilerplate stripped, capped at ~16K chars. Use `mode=summary` for ~6K or `mode=full` for uncapped output.
+
+Both tools include truncation metadata (`returned`, `totalInteractive`, `truncated`) so agents know when they're seeing a subset.
 
 ## Element Handle Lifecycle
 

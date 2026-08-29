@@ -20,8 +20,17 @@ extension MCPTools {
         let title = dict["title"] as? String ?? ""
         let url = dict["url"] as? String ?? ""
         let content = dict["content"] as? String ?? ""
-        let format = dict["format"] as? String ?? "markdown"
-        let text = "# \(title)\nURL: \(url)\nFormat: \(format)\n\n\(content)"
+        let mode = dict["mode"] as? String
+        let characters = dict["characters"] as? Int ?? content.count
+        let truncated = dict["truncated"] as? Bool ?? false
+
+        var header = "# \(title)\nURL: \(url)"
+        if let mode { header += "\nMode: \(mode)" }
+        header += "\nCharacters: \(characters)"
+        if truncated { header += " (truncated)" }
+        header += "\n\n"
+
+        let text = header + content
         return textContent(text)
     }
 
@@ -33,10 +42,20 @@ extension MCPTools {
 
         let title = dict["title"] as? String ?? ""
         let url = dict["url"] as? String ?? ""
-        let count = dict["elementCount"] as? Int ?? 0
+        let returned = dict["returned"] as? Int ?? 0
+        let total = dict["totalInteractive"] as? Int ?? 0
+        let truncated = dict["truncated"] as? Bool ?? false
+        let mode = dict["mode"] as? String ?? "interactive"
         let elements = dict["elements"] as? [[String: Any]] ?? []
 
-        var lines = ["Page: \(title)", "URL: \(url)", "Interactive elements: \(count)", ""]
+        var lines = [
+            "Page: \(title)",
+            "URL: \(url)",
+            "Elements: \(returned) of \(total)\(truncated ? " (showing top \(returned))" : "")",
+            "Mode: \(mode)",
+            ""
+        ]
+
         for el in elements {
             let id = el["id"] as? String ?? "?"
             let tag = el["tag"] as? String ?? "?"

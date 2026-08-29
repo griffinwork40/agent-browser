@@ -17,7 +17,10 @@ extension BrowserAutomationService {
         let url: String?
         let title: String
         let generation: Int
-        let elementCount: Int
+        let returned: Int
+        let totalInteractive: Int
+        let truncated: Bool
+        let mode: String
         let elements: [[String: AnyCodable]]
     }
 
@@ -50,7 +53,10 @@ extension BrowserAutomationService {
             guard let id = params["id"] as? String else {
                 completion(.failure(code: ErrorCode.invalidParams, message: "Missing 'id'")); return true
             }
-            inspectCallback(id: id, completion: completion)
+            let mode = params["mode"] as? String
+            let limit = params["limit"] as? Int
+            let query = params["query"] as? String
+            inspectCallback(id: id, mode: mode, limit: limit, query: query, completion: completion)
             return true
 
         case "page.click":
@@ -111,7 +117,10 @@ extension BrowserAutomationService {
             guard let id = params["id"] as? String else {
                 return .failure(code: ErrorCode.invalidParams, message: "Missing 'id'")
             }
-            return await inspectResponse(id: id)
+            let mode = params["mode"] as? String
+            let limit = params["limit"] as? Int
+            let query = params["query"] as? String
+            return await inspectResponse(id: id, mode: mode, limit: limit, query: query)
 
         case "page.click":
             guard let id = params["id"] as? String, let elId = params["elementId"] as? String else {
@@ -156,12 +165,15 @@ extension BrowserAutomationService {
 
     // MARK: - Inspect Implementation
 
-    func inspectCallback(id: String, completion: @escaping (AgentResponse) -> Void) {
+    func inspectCallback(
+        id: String, mode: String?, limit: Int?, query: String?,
+        completion: @escaping (AgentResponse) -> Void
+    ) {
         guard let tab = resolveTab(id) else {
             completion(.failure(code: ErrorCode.tabNotFound, message: "No tab with id: \(id)")); return
         }
-        // inspect() already returns a JSON string -- do NOT double-stringify
-        let script = "window.__agentBrowser ? window.__agentBrowser.inspect() : JSON.stringify({error:'BRIDGE_NOT_LOADED'})"
+        let optsJSON = buildInspectOpts(mode: mode, limit: limit, query: query)
+        let script = "window.__agentBrowser ? window.__agentBrowser.inspect(\(optsJSON)) : JSON.stringify({error:'BRIDGE_NOT_LOADED'})"
         let tabID = tab.id.uuidString
         let tabTitle = tab.title
         let tabURL = tab.url?.absoluteString
@@ -179,11 +191,12 @@ extension BrowserAutomationService {
         }
     }
 
-    private func inspectResponse(id: String) async -> AgentResponse {
+    private func inspectResponse(id: String, mode: String?, limit: Int?, query: String?) async -> AgentResponse {
         guard let tab = resolveTab(id) else {
             return .failure(code: ErrorCode.tabNotFound, message: "No tab with id: \(id)")
         }
-        let script = "window.__agentBrowser ? window.__agentBrowser.inspect() : JSON.stringify({error:'BRIDGE_NOT_LOADED'})"
+        let optsJSON = buildInspectOpts(mode: mode, limit: limit, query: query)
+        let script = "window.__agentBrowser ? window.__agentBrowser.inspect(\(optsJSON)) : JSON.stringify({error:'BRIDGE_NOT_LOADED'})"
         do {
             let raw = try await evalJSOnTabInBridgeWorld(tab, script: script)
             return Self.parseInspectResult(raw: raw, tabID: tab.id.uuidString, title: tab.title, url: tab.url?.absoluteString)
@@ -203,10 +216,19 @@ extension BrowserAutomationService {
         }
         let generation = dict["generation"] as? Int ?? 0
         let elements = dict["elements"] as? [[String: Any]] ?? []
+        let returned = dict["returned"] as? Int ?? elements.count
+        let totalInteractive = dict["totalInteractive"] as? Int ?? elements.count
+        let truncated = dict["truncated"] as? Bool ?? false
+        let mode = dict["mode"] as? String ?? "interactive"
         let mapped = elements.map { el in el.mapValues { AnyCodable($0) } }
         return .success(InspectResult(
             id: tabID, url: url, title: title,
-            generation: generation, elementCount: mapped.count, elements: mapped
+            generation: generation,
+            returned: returned,
+            totalInteractive: totalInteractive,
+            truncated: truncated,
+            mode: mode,
+            elements: mapped
         ))
     }
 
@@ -241,6 +263,14 @@ extension BrowserAutomationService {
          .replacingOccurrences(of: "\r", with: "\\r")
          .replacingOccurrences(of: "\u{2028}", with: "\\u2028")
          .replacingOccurrences(of: "\u{2029}", with: "\\u2029")
+    }
+
+    private func buildInspectOpts(mode: String?, limit: Int?, query: String?) -> String {
+        var parts: [String] = []
+        if let mode { parts.append("mode:'\(escapeJSString(mode))'") }
+        if let limit { parts.append("limit:\(limit)") }
+        if let query { parts.append("query:'\(escapeJSString(query))'") }
+        return parts.isEmpty ? "{}" : "{\(parts.joined(separator: ","))}"
     }
 
     static func mapJSErrorCode(_ error: String) -> String {
