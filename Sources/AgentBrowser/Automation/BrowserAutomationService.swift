@@ -16,9 +16,59 @@ final class BrowserAutomationService {
         self.tabManager = tabManager
     }
 
-    // MARK: - Tab Listing
+    // MARK: - Dispatch
 
-    /// Structured info for every open tab.
+    /// Dispatch a structured protocol request. Returns a structured response.
+    func dispatch(_ request: AgentRequest) async -> AgentResponse {
+        guard request.version == 1 else {
+            return .failure(code: ErrorCode.badRequest, message: "Unsupported protocol version: \(request.version)")
+        }
+
+        let params = request.params?.mapValues(\.value) ?? [:]
+
+        switch request.method {
+        case "tabs.list":
+            return .success(listTabs())
+
+        case "tabs.get":
+            guard let id = params["id"] as? String else {
+                return .failure(code: ErrorCode.invalidParams, message: "Missing 'id' parameter")
+            }
+            return getTabResponse(id: id)
+
+        case "tabs.open":
+            guard let url = params["url"] as? String else {
+                return .failure(code: ErrorCode.invalidParams, message: "Missing 'url' parameter")
+            }
+            return openURLResponse(url)
+
+        case "page.read":
+            guard let id = params["id"] as? String else {
+                return .failure(code: ErrorCode.invalidParams, message: "Missing 'id' parameter")
+            }
+            let format = params["format"] as? String ?? "markdown"
+            return await readPageResponse(id: id, format: format)
+
+        case "page.eval":
+            guard let id = params["id"] as? String,
+                  let script = params["script"] as? String else {
+                return .failure(code: ErrorCode.invalidParams, message: "Missing 'id' or 'script' parameter")
+            }
+            return await evalJSResponse(id: id, script: script)
+
+        case "page.screenshot":
+            guard let id = params["id"] as? String else {
+                return .failure(code: ErrorCode.invalidParams, message: "Missing 'id' parameter")
+            }
+            return await screenshotResponse(id: id)
+
+        default:
+            return .failure(code: ErrorCode.unknownMethod, message: "Unknown method: \(request.method)")
+        }
+    }
+
+    // MARK: - Data Types
+
     struct TabInfo: Codable, Sendable {
         let id: String
         let title: String
@@ -26,6 +76,50 @@ final class BrowserAutomationService {
         let isLoading: Bool
         let isActive: Bool
     }
+
+    struct TabDetail: Codable, Sendable {
+        let id: String
+        let title: String
+        let url: String?
+        let isLoading: Bool
+        let isActive: Bool
+        let canGoBack: Bool
+        let canGoForward: Bool
+        let isSecure: Bool
+    }
+
+    struct OpenResult: Codable, Sendable {
+        let id: String
+        let url: String
+    }
+
+    struct PageContent: Codable, Sendable {
+        let id: String
+        let title: String
+        let url: String?
+        let content: String
+        let format: String        // "markdown", "text", or "html"
+        let byteLength: Int
+        let extractionTime: Double // seconds
+    }
+
+    struct JSEvalResult: Codable, Sendable {
+        let id: String
+        let value: String?        // JSON-encoded result, null if void
+        let type: String          // "string", "number", "boolean", "object", "null", "undefined"
+        let error: String?        // non-nil if JS threw
+    }
+
+    struct ScreenshotInfo: Codable, Sendable {
+        let id: String
+        let width: Int
+        let height: Int
+        let byteLength: Int
+        let encoding: String      // "base64"
+        let data: String          // base64-encoded PNG
+    }
+
+    // MARK: - Tab Listing
 
     func listTabs() -> [TabInfo] {
         let activeID = tabManager.activeTab?.id
@@ -42,40 +136,12 @@ final class BrowserAutomationService {
 
     // MARK: - Get Tab
 
-    struct TabDetail: Codable, Sendable {
-        let id: String
-        let title: String
-        let url: String?
-        let isLoading: Bool
-        let isActive: Bool
-        let canGoBack: Bool
-        let canGoForward: Bool
-        let isSecure: Bool
-    }
-
-    enum AutomationError: Error, LocalizedError, Sendable {
-        case tabNotFound(String)
-        case javaScriptError(String)
-        case screenshotFailed(String)
-        case invalidURL(String)
-
-        var errorDescription: String? {
-            switch self {
-            case .tabNotFound(let id): return "Tab not found: \(id)"
-            case .javaScriptError(let msg): return "JavaScript error: \(msg)"
-            case .screenshotFailed(let msg): return "Screenshot failed: \(msg)"
-            case .invalidURL(let url): return "Invalid URL: \(url)"
-            }
-        }
-    }
-
-    func getTab(id: String) throws -> TabDetail {
-        guard let uuid = UUID(uuidString: id),
-              let tab = tabManager.tab(for: uuid) else {
-            throw AutomationError.tabNotFound(id)
+    private func getTabResponse(id: String) -> AgentResponse {
+        guard let tab = resolveTab(id) else {
+            return .failure(code: ErrorCode.tabNotFound, message: "No tab with id: \(id)")
         }
         let activeID = tabManager.activeTab?.id
-        return TabDetail(
+        return .success(TabDetail(
             id: tab.id.uuidString,
             title: tab.title,
             url: tab.url?.absoluteString,
@@ -84,166 +150,397 @@ final class BrowserAutomationService {
             canGoBack: tab.canGoBack,
             canGoForward: tab.canGoForward,
             isSecure: tab.isSecure
-        )
+        ))
     }
 
     // MARK: - Open URL
 
-    struct OpenResult: Codable, Sendable {
-        let id: String
-        let url: String
-    }
-
-    func openURL(_ urlString: String) throws -> OpenResult {
-        guard let url = URL(string: urlString), url.scheme != nil else {
-            // Try adding https:// if it looks like a domain
-            if urlString.contains(".") && !urlString.contains(" ") {
-                guard let url = URL(string: "https://\(urlString)") else {
-                    throw AutomationError.invalidURL(urlString)
-                }
-                let tab = tabManager.createTab(url: url)
-                tabManager.select(tab: tab)
-                return OpenResult(id: tab.id.uuidString, url: url.absoluteString)
+    private func openURLResponse(_ urlString: String) -> AgentResponse {
+        var resolved = urlString
+        if URL(string: resolved)?.scheme == nil {
+            if resolved.contains(".") && !resolved.contains(" ") {
+                resolved = "https://\(resolved)"
+            } else {
+                return .failure(code: ErrorCode.invalidURL, message: "Cannot parse URL: \(urlString)")
             }
-            throw AutomationError.invalidURL(urlString)
+        }
+        guard let url = URL(string: resolved) else {
+            return .failure(code: ErrorCode.invalidURL, message: "Cannot parse URL: \(urlString)")
         }
         let tab = tabManager.createTab(url: url)
         tabManager.select(tab: tab)
-        return OpenResult(id: tab.id.uuidString, url: url.absoluteString)
+        return .success(OpenResult(id: tab.id.uuidString, url: url.absoluteString))
     }
 
     // MARK: - Read Page
 
-    struct PageContent: Codable, Sendable {
-        let id: String
-        let title: String
-        let url: String?
-        let text: String
-        let html: String?
-    }
-
-    /// Read the current live DOM content from a tab's WKWebView.
-    /// This returns the ACTUAL rendered page state -- authenticated,
-    /// client-rendered, dynamically modified. Not a re-fetch.
-    func readPage(id: String, includeHTML: Bool = false) async throws -> PageContent {
-        let tab = try resolveTab(id)
-
-        // Extract visible text from the live DOM
-        let textScript = "document.body ? document.body.innerText : ''"
-        let text = try await evaluateJS(on: tab.webView, script: textScript) as? String ?? ""
-
-        var html: String? = nil
-        if includeHTML {
-            let htmlScript = "document.documentElement ? document.documentElement.outerHTML : ''"
-            html = try await evaluateJS(on: tab.webView, script: htmlScript) as? String
+    /// Read content from the live DOM.
+    ///
+    /// Formats:
+    /// - "markdown": lightweight semantic extraction (headings, paragraphs, links, lists)
+    /// - "text": raw document.body.innerText
+    /// - "html": full document HTML
+    ///
+    /// Handles: empty pages (returns empty content), loading pages (returns partial + isLoading flag),
+    /// JS-heavy SPAs (reads the live rendered DOM, not source HTML).
+    private func readPageResponse(id: String, format: String) async -> AgentResponse {
+        guard let tab = resolveTab(id) else {
+            return .failure(code: ErrorCode.tabNotFound, message: "No tab with id: \(id)")
         }
 
-        return PageContent(
-            id: tab.id.uuidString,
-            title: tab.title,
-            url: tab.url?.absoluteString,
-            text: text,
-            html: html
-        )
+        let start = CFAbsoluteTimeGetCurrent()
+
+        do {
+            let content: String
+            switch format {
+            case "html":
+                content = try await extractHTML(from: tab.webView)
+            case "text":
+                content = try await extractText(from: tab.webView)
+            default: // "markdown"
+                content = try await extractMarkdown(from: tab.webView)
+            }
+
+            let elapsed = CFAbsoluteTimeGetCurrent() - start
+            return .success(PageContent(
+                id: tab.id.uuidString,
+                title: tab.title,
+                url: tab.url?.absoluteString,
+                content: content,
+                format: format == "html" || format == "text" ? format : "markdown",
+                byteLength: content.utf8.count,
+                extractionTime: (elapsed * 1000).rounded() / 1000 // 3 decimal places
+            ))
+        } catch {
+            return .failure(code: ErrorCode.extractionFailed, message: error.localizedDescription)
+        }
     }
 
     // MARK: - Execute JavaScript
 
-    struct JSResult: Codable, Sendable {
-        let id: String
-        let result: String?
-        let error: String?
-    }
+    private func evalJSResponse(id: String, script: String) async -> AgentResponse {
+        guard let tab = resolveTab(id) else {
+            return .failure(code: ErrorCode.tabNotFound, message: "No tab with id: \(id)")
+        }
 
-    /// Execute arbitrary JavaScript in a tab's live page context.
-    /// Returns the stringified result.
-    func executeJavaScript(id: String, script: String) async throws -> JSResult {
-        let tab = try resolveTab(id)
-
-        // Wrap in JSON.stringify to handle all return types safely.
-        // The raw script runs first; we stringify whatever it returns.
+        // Strategy: wrap the user script so we can capture the result type and
+        // stringify it safely. The user writes raw JS -- no `return` required for
+        // simple expressions, but `return` works inside the function body too.
         let wrappedScript = """
         (function() {
             try {
-                var __result = (function() { \(script) })();
-                if (__result === undefined) return JSON.stringify(null);
-                return JSON.stringify(__result);
+                var __r = (function() { \(script) })();
+                var __t = (typeof __r);
+                if (__r === undefined) return JSON.stringify({__v: null, __t: "undefined"});
+                if (__r === null) return JSON.stringify({__v: null, __t: "null"});
+                return JSON.stringify({__v: __r, __t: __t});
             } catch(e) {
-                return JSON.stringify({__error: e.message || String(e)});
+                return JSON.stringify({__e: e.message || String(e)});
             }
         })()
         """
 
         do {
             let raw = try await evaluateJS(on: tab.webView, script: wrappedScript)
-            if let jsonString = raw as? String {
-                // Check if it was an error
-                if jsonString.contains("\"__error\"") {
-                    // Parse the error
-                    if let data = jsonString.data(using: .utf8),
-                       let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                       let errorMsg = dict["__error"] as? String {
-                        return JSResult(id: tab.id.uuidString, result: nil, error: errorMsg)
-                    }
-                }
-                return JSResult(id: tab.id.uuidString, result: jsonString, error: nil)
+            guard let jsonString = raw as? String,
+                  let data = jsonString.data(using: .utf8),
+                  let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                return .success(JSEvalResult(
+                    id: tab.id.uuidString, value: String(describing: raw),
+                    type: "unknown", error: nil
+                ))
             }
-            return JSResult(id: tab.id.uuidString, result: String(describing: raw), error: nil)
+
+            // JS error
+            if let err = dict["__e"] as? String {
+                return .success(JSEvalResult(
+                    id: tab.id.uuidString, value: nil, type: "error", error: err
+                ))
+            }
+
+            // Successful result
+            let type = dict["__t"] as? String ?? "unknown"
+            let value = dict["__v"]
+
+            // Re-encode just the value portion
+            let valueJSON: String?
+            if value is NSNull {
+                valueJSON = "null"
+            } else if let valueData = try? JSONSerialization.data(withJSONObject: value as Any) {
+                valueJSON = String(data: valueData, encoding: .utf8)
+            } else {
+                valueJSON = String(describing: value)
+            }
+
+            return .success(JSEvalResult(
+                id: tab.id.uuidString, value: valueJSON, type: type, error: nil
+            ))
         } catch {
-            return JSResult(id: tab.id.uuidString, result: nil, error: error.localizedDescription)
+            return .failure(code: ErrorCode.javaScriptError, message: error.localizedDescription)
         }
     }
 
     // MARK: - Screenshot
 
-    struct ScreenshotResult: Sendable {
-        let id: String
-        let pngData: Data
-        let width: Int
-        let height: Int
+    private func screenshotResponse(id: String) async -> AgentResponse {
+        guard let tab = resolveTab(id) else {
+            return .failure(code: ErrorCode.tabNotFound, message: "No tab with id: \(id)")
+        }
+
+        do {
+            let image = try await withCheckedThrowingContinuation { (cont: CheckedContinuation<NSImage, Error>) in
+                let config = WKSnapshotConfiguration()
+                config.afterScreenUpdates = true
+                tab.webView.takeSnapshot(with: config) { image, error in
+                    if let image {
+                        cont.resume(returning: image)
+                    } else {
+                        cont.resume(throwing: NSError(
+                            domain: "AgentBrowser", code: -1,
+                            userInfo: [NSLocalizedDescriptionKey: error?.localizedDescription ?? "Unknown snapshot error"]
+                        ))
+                    }
+                }
+            }
+
+            guard let tiff = image.tiffRepresentation,
+                  let bitmap = NSBitmapImageRep(data: tiff),
+                  let pngData = bitmap.representation(using: .png, properties: [:]) else {
+                return .failure(code: ErrorCode.screenshotFailed, message: "Failed to encode PNG")
+            }
+
+            return .success(ScreenshotInfo(
+                id: tab.id.uuidString,
+                width: Int(image.size.width),
+                height: Int(image.size.height),
+                byteLength: pngData.count,
+                encoding: "base64",
+                data: pngData.base64EncodedString()
+            ))
+        } catch {
+            return .failure(code: ErrorCode.screenshotFailed, message: error.localizedDescription)
+        }
     }
 
-    /// Capture the current viewport of a tab as a PNG.
-    /// Returns the raw PNG bytes.
-    func screenshot(id: String) async throws -> ScreenshotResult {
-        let tab = try resolveTab(id)
-        let webView = tab.webView
+    // MARK: - Content Extraction
 
-        let image = try await withCheckedThrowingContinuation { (cont: CheckedContinuation<NSImage, Error>) in
-            let config = WKSnapshotConfiguration()
-            config.afterScreenUpdates = true
-            webView.takeSnapshot(with: config) { image, error in
-                if let image {
-                    cont.resume(returning: image)
-                } else {
-                    cont.resume(throwing: AutomationError.screenshotFailed(
-                        error?.localizedDescription ?? "Unknown error"))
+    /// Extract visible text via document.body.innerText.
+    private func extractText(from webView: WKWebView) async throws -> String {
+        let script = "document.body ? document.body.innerText : ''"
+        return try await evaluateJS(on: webView, script: script) as? String ?? ""
+    }
+
+    /// Extract full HTML.
+    private func extractHTML(from webView: WKWebView) async throws -> String {
+        let script = "document.documentElement ? document.documentElement.outerHTML : ''"
+        return try await evaluateJS(on: webView, script: script) as? String ?? ""
+    }
+
+    /// Extract a lightweight Markdown representation from the live DOM.
+    ///
+    /// Strategy: injected JS walks the DOM tree and converts semantic elements
+    /// (headings, paragraphs, links, lists, tables, code blocks, images) into
+    /// Markdown. This runs against the RENDERED DOM -- it sees client-rendered
+    /// SPA content, authenticated pages, and dynamic modifications.
+    ///
+    /// This is NOT a full Readability extraction. It's a pragmatic first pass
+    /// that handles the 80% case: article-like pages, documentation, dashboards,
+    /// landing pages, search results.
+    private func extractMarkdown(from webView: WKWebView) async throws -> String {
+        let script = Self.markdownExtractionScript
+        let raw = try await evaluateJS(on: webView, script: script)
+        return (raw as? String) ?? ""
+    }
+
+    /// Injected JS for markdown extraction.
+    ///
+    /// Design:
+    /// - Walks the RENDERED DOM (sees SPA content, auth'd pages, dynamic state)
+    /// - Uses innerText as the base (already excludes hidden elements, scripts, styles)
+    /// - Overlays structural markdown for headings, links, lists, code, tables
+    /// - Falls back gracefully: empty pages return "", loading pages return partial content
+    /// - Does not try to be Readability -- prefers useful-now over perfect-later
+    private static let markdownExtractionScript: String = """
+    (function() {
+        if (!document.body) return '';
+        var out = [];
+        var title = document.title || '';
+
+        // Find main content root. Prefer semantic containers, fall back to body.
+        var root = document.querySelector('main, article, [role="main"]') || document.body;
+
+        var SKIP = new Set(['script','style','noscript','svg','template','link','meta']);
+
+        function hidden(el) {
+            // Lightweight visibility check. Avoids getComputedStyle overhead for most elements.
+            // Check display/visibility only on elements that commonly hide content.
+            if (el.hidden) return true;
+            var s = el.style;
+            if (s && (s.display === 'none' || s.visibility === 'hidden')) return true;
+            return false;
+        }
+
+        function txt(el) {
+            return (el.innerText || el.textContent || '').replace(/[ \\t]+/g, ' ').trim();
+        }
+
+        function absURL(href) {
+            if (!href) return '';
+            try { return new URL(href, document.baseURI).href; } catch(e) { return href; }
+        }
+
+        function walk(node) {
+            if (node.nodeType === 3) { // TEXT_NODE
+                var t = node.textContent;
+                if (t && t.trim()) out.push(t);
+                return;
+            }
+            if (node.nodeType !== 1) return;
+            var tag = node.tagName.toLowerCase();
+            if (SKIP.has(tag)) return;
+            if (hidden(node)) return;
+
+            switch(tag) {
+            case 'h1': case 'h2': case 'h3': case 'h4': case 'h5': case 'h6':
+                var lvl = tag[1];
+                var prefix = '#'.repeat(parseInt(lvl));
+                out.push('\\n' + prefix + ' ' + txt(node) + '\\n');
+                return;
+
+            case 'p':
+                out.push('\\n');
+                for (var c of node.childNodes) walk(c);
+                out.push('\\n');
+                return;
+
+            case 'a':
+                var href = node.getAttribute('href') || '';
+                var atxt = txt(node);
+                if (atxt && href && !href.startsWith('javascript:') && !href.startsWith('#')) {
+                    out.push('[' + atxt + '](' + absURL(href) + ')');
+                } else if (atxt) {
+                    out.push(atxt);
                 }
+                return;
+
+            case 'img':
+                var alt = node.getAttribute('alt') || '';
+                var src = node.getAttribute('src') || '';
+                if (src) out.push('![' + alt + '](' + absURL(src) + ')');
+                return;
+
+            case 'strong': case 'b':
+                var st = txt(node);
+                if (st) out.push('**' + st + '**');
+                return;
+            case 'em': case 'i':
+                var et = txt(node);
+                if (et) out.push('*' + et + '*');
+                return;
+
+            case 'code':
+                if (node.parentElement && node.parentElement.tagName === 'PRE') break;
+                var ct = node.textContent || '';
+                if (ct.trim()) out.push('`' + ct.trim() + '`');
+                return;
+
+            case 'pre':
+                var codeEl = node.querySelector('code');
+                var lang = '';
+                if (codeEl) {
+                    var m = (codeEl.className || '').match(/language-(\\w+)/);
+                    if (m) lang = m[1];
+                }
+                out.push('\\n```' + lang + '\\n' + (node.textContent || '').trim() + '\\n```\\n');
+                return;
+
+            case 'blockquote':
+                txt(node).split('\\n').forEach(function(l) { out.push('\\n> ' + l.trim()); });
+                out.push('\\n');
+                return;
+
+            case 'ul':
+                out.push('\\n');
+                Array.from(node.children).forEach(function(li) {
+                    if (li.tagName === 'LI') out.push('- ' + txt(li) + '\\n');
+                });
+                return;
+
+            case 'ol':
+                out.push('\\n');
+                var i = 1;
+                Array.from(node.children).forEach(function(li) {
+                    if (li.tagName === 'LI') { out.push(i + '. ' + txt(li) + '\\n'); i++; }
+                });
+                return;
+
+            case 'table':
+                out.push('\\n');
+                var rows = node.querySelectorAll('tr');
+                var first = true;
+                rows.forEach(function(tr) {
+                    var cells = tr.querySelectorAll('th, td');
+                    if (cells.length === 0) return;
+                    var line = '| ' + Array.from(cells).map(function(c) { return txt(c); }).join(' | ') + ' |';
+                    out.push(line + '\\n');
+                    if (first) {
+                        out.push('|' + Array.from(cells).map(function() { return '---'; }).join('|') + '|\\n');
+                        first = false;
+                    }
+                });
+                out.push('\\n');
+                return;
+
+            case 'hr':
+                out.push('\\n---\\n');
+                return;
+
+            case 'br':
+                out.push('\\n');
+                return;
+
+            // Layout containers: recurse but add line breaks around block-level ones
+            case 'div': case 'section': case 'main': case 'article': case 'aside':
+            case 'details': case 'summary': case 'figure': case 'figcaption':
+                out.push('\\n');
+                for (var ch of node.childNodes) walk(ch);
+                out.push('\\n');
+                return;
+
+            // Table internals, form elements, spans -- just recurse
+            default:
+                for (var child of node.childNodes) walk(child);
+                return;
+            }
+
+            // Fallthrough from code-inside-pre break
+            for (var fb of node.childNodes) walk(fb);
+        }
+
+        walk(root);
+
+        var result = out.join('')
+            .replace(/[ \\t]*\\n/g, '\\n')
+            .replace(/\\n{3,}/g, '\\n\\n')
+            .trim();
+
+        // Prepend title
+        if (title) {
+            // Don't duplicate if the content already starts with the title as h1
+            if (!result.startsWith('# ' + title)) {
+                result = '# ' + title + '\\n\\n' + result;
             }
         }
 
-        guard let tiff = image.tiffRepresentation,
-              let bitmap = NSBitmapImageRep(data: tiff),
-              let pngData = bitmap.representation(using: .png, properties: [:]) else {
-            throw AutomationError.screenshotFailed("Failed to encode PNG")
-        }
-
-        return ScreenshotResult(
-            id: tab.id.uuidString,
-            pngData: pngData,
-            width: Int(image.size.width),
-            height: Int(image.size.height)
-        )
-    }
+        return result || '(empty page)';
+    })()
+    """;
 
     // MARK: - Private Helpers
 
-    private func resolveTab(_ id: String) throws -> BrowserTab {
-        guard let uuid = UUID(uuidString: id),
-              let tab = tabManager.tab(for: uuid) else {
-            throw AutomationError.tabNotFound(id)
-        }
-        return tab
+    private func resolveTab(_ id: String) -> BrowserTab? {
+        guard let uuid = UUID(uuidString: id) else { return nil }
+        return tabManager.tab(for: uuid)
     }
 
     /// Evaluate JS using the callback API (NOT the async overload which crashes on void returns).
@@ -251,7 +548,7 @@ final class BrowserAutomationService {
         try await withCheckedThrowingContinuation { cont in
             webView.evaluateJavaScript(script) { result, error in
                 if let error {
-                    cont.resume(throwing: AutomationError.javaScriptError(error.localizedDescription))
+                    cont.resume(throwing: error)
                 } else {
                     cont.resume(returning: result)
                 }

@@ -1,138 +1,203 @@
 #!/bin/bash
-# browser-ctl: CLI tool for controlling Agent Browser from the terminal.
-# Reads connection info from ~/.config/agent-browser/connection.json.
+# browser-ctl: Control a running Agent Browser from the terminal.
+#
+# Reads connection info from ~/.config/agent-browser/connection.json
+# and communicates with the browser's local HTTP API.
 #
 # Usage:
-#   browser-ctl tabs                         List all open tabs
-#   browser-ctl get <tab-id>                 Get details for a tab
-#   browser-ctl open <url>                   Open a URL in a new tab
-#   browser-ctl read <tab-id>                Read page content from a tab
-#   browser-ctl js <tab-id> <script>         Execute JavaScript in a tab
-#   browser-ctl screenshot <tab-id> [file]   Capture screenshot (saves PNG)
-#   browser-ctl health                       Check if browser is running
+#   browser-ctl tabs                             List open tabs
+#   browser-ctl tab <id>                         Get tab details
+#   browser-ctl open <url>                       Open URL in new tab
+#   browser-ctl read <id> [--text|--html]        Read page content (default: markdown)
+#   browser-ctl eval <id> <script>               Execute JavaScript
+#   browser-ctl screenshot <id> [output.png]     Save screenshot
+#   browser-ctl health                           Check browser status
+#
+# Tab IDs are UUIDs from 'browser-ctl tabs'. Closing a tab invalidates its ID.
 
 set -euo pipefail
 
-CONFIG_FILE="$HOME/.config/agent-browser/connection.json"
+CONFIG="$HOME/.config/agent-browser/connection.json"
 
-# Read connection descriptor
-if [ ! -f "$CONFIG_FILE" ]; then
-    echo "Error: Agent Browser is not running (no connection descriptor at $CONFIG_FILE)" >&2
-    exit 1
+die() { echo "error: $1" >&2; exit 1; }
+
+[ -f "$CONFIG" ] || die "Agent Browser not running (no $CONFIG)"
+
+URL=$(python3 -c "import json; print(json.load(open('$CONFIG'))['url'])" 2>/dev/null) \
+    || die "Cannot read connection.json"
+TOKEN=$(python3 -c "import json; print(json.load(open('$CONFIG'))['token'])" 2>/dev/null) \
+    || die "Cannot read token from connection.json"
+
+# Verify the PID is still alive
+PID=$(python3 -c "import json; print(json.load(open('$CONFIG'))['pid'])" 2>/dev/null)
+if [ -n "$PID" ] && ! kill -0 "$PID" 2>/dev/null; then
+    die "Agent Browser (PID $PID) is no longer running. Stale connection descriptor."
 fi
 
-BASE_URL=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE'))['url'])")
-TOKEN=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE'))['token'])")
-
-# Helper: make an authenticated curl request
-api() {
+# Send a structured protocol request
+agent_call() {
     local method="$1"
-    local path="$2"
-    shift 2
-    curl -s -X "$method" \
+    shift
+    # Build params JSON from remaining args (key=value pairs)
+    local params="{"
+    local first=true
+    for arg in "$@"; do
+        local key="${arg%%=*}"
+        local val="${arg#*=}"
+        if [ "$first" = true ]; then first=false; else params+=","; fi
+        params+="\"$key\":\"$val\""
+    done
+    params+="}"
+    if [ "$params" = "{}" ]; then params="null"; fi
+
+    curl -sS -X POST \
         -H "Authorization: Bearer $TOKEN" \
         -H "Content-Type: application/json" \
-        -H "Host: 127.0.0.1:${BASE_URL##*:}" \
-        "$@" \
-        "${BASE_URL}${path}"
+        -H "Host: ${URL##http://}" \
+        -d "{\"version\":1,\"method\":\"$method\",\"params\":$params}" \
+        "$URL/agent"
 }
 
-# Helper: make a request and pretty-print JSON
-api_json() {
-    api "$@" | python3 -m json.tool 2>/dev/null || api "$@"
+# Pretty-print JSON, extracting .result if present
+format_result() {
+    python3 -c "
+import json, sys
+try:
+    resp = json.load(sys.stdin)
+    if not resp.get('ok', True):
+        err = resp.get('error', {})
+        print(f\"error [{err.get('code','?')}]: {err.get('message','unknown')}\", file=sys.stderr)
+        sys.exit(1)
+    result = resp.get('result')
+    if result is not None:
+        print(json.dumps(result, indent=2))
+except json.JSONDecodeError:
+    sys.stdin.seek(0)
+    print(sys.stdin.read())
+"
 }
 
-# Commands
+# Print just the content field for read
+format_read() {
+    python3 -c "
+import json, sys
+try:
+    resp = json.load(sys.stdin)
+    if not resp.get('ok', True):
+        err = resp.get('error', {})
+        print(f\"error [{err.get('code','?')}]: {err.get('message','unknown')}\", file=sys.stderr)
+        sys.exit(1)
+    result = resp.get('result', {})
+    content = result.get('content', '')
+    fmt = result.get('format', '?')
+    et = result.get('extractionTime', 0)
+    bl = result.get('byteLength', 0)
+    print(content)
+    print(f'\n--- [{fmt}, {bl} bytes, {et}s] ---', file=sys.stderr)
+except json.JSONDecodeError:
+    print('error: invalid response', file=sys.stderr)
+    sys.exit(1)
+"
+}
+
+# Save screenshot from base64 in result
+save_screenshot() {
+    local output="$1"
+    python3 -c "
+import json, sys, base64
+resp = json.load(sys.stdin)
+if not resp.get('ok', True):
+    err = resp.get('error', {})
+    print(f\"error [{err.get('code','?')}]: {err.get('message','unknown')}\", file=sys.stderr)
+    sys.exit(1)
+result = resp.get('result', {})
+data = base64.b64decode(result.get('data', ''))
+with open('$output', 'wb') as f:
+    f.write(data)
+w, h = result.get('width', 0), result.get('height', 0)
+print(f'Saved {len(data)} bytes ({w}x{h}) to $output')
+"
+}
+
 case "${1:-help}" in
-
     health)
-        curl -s "${BASE_URL}/health" | python3 -m json.tool
+        curl -sS "$URL/health" | python3 -m json.tool
         ;;
 
     tabs|list)
-        api_json GET /api/tabs
+        agent_call "tabs.list" | format_result
         ;;
 
-    get)
-        if [ -z "${2:-}" ]; then
-            echo "Usage: browser-ctl get <tab-id>" >&2
-            exit 1
-        fi
-        api_json GET "/api/tabs/$2"
+    tab|get)
+        [ -n "${2:-}" ] || die "Usage: browser-ctl tab <id>"
+        agent_call "tabs.get" "id=$2" | format_result
         ;;
 
     open)
-        if [ -z "${2:-}" ]; then
-            echo "Usage: browser-ctl open <url>" >&2
-            exit 1
-        fi
-        api_json POST /api/tabs -d "{\"url\": \"$2\"}"
+        [ -n "${2:-}" ] || die "Usage: browser-ctl open <url>"
+        agent_call "tabs.open" "url=$2" | format_result
         ;;
 
     read)
-        if [ -z "${2:-}" ]; then
-            echo "Usage: browser-ctl read <tab-id>" >&2
-            exit 1
-        fi
-        # Default: text only. Pass --html for HTML too.
-        if [ "${3:-}" = "--html" ]; then
-            api_json POST "/api/tabs/$2/read" -d '{"html": true}'
-        else
-            api_json GET "/api/tabs/$2/read"
-        fi
+        [ -n "${2:-}" ] || die "Usage: browser-ctl read <id> [--text|--html|--markdown]"
+        FORMAT="markdown"
+        case "${3:-}" in
+            --text) FORMAT="text" ;;
+            --html) FORMAT="html" ;;
+            --markdown|"") FORMAT="markdown" ;;
+            *) die "Unknown format: $3. Use --text, --html, or --markdown" ;;
+        esac
+        agent_call "page.read" "id=$2" "format=$FORMAT" | format_read
         ;;
 
-    js|eval)
-        if [ -z "${2:-}" ] || [ -z "${3:-}" ]; then
-            echo "Usage: browser-ctl js <tab-id> <script>" >&2
-            echo "  Example: browser-ctl js <id> 'return document.title'" >&2
-            exit 1
-        fi
-        # Escape the script for JSON
-        ESCAPED_SCRIPT=$(python3 -c "import json,sys; print(json.dumps(sys.argv[1]))" "$3")
-        api_json POST "/api/tabs/$2/js" -d "{\"script\": $ESCAPED_SCRIPT}"
+    eval|js)
+        [ -n "${2:-}" ] && [ -n "${3:-}" ] || die "Usage: browser-ctl eval <id> '<script>'"
+        # Use structured protocol with proper JSON escaping
+        ESCAPED=$(python3 -c "import json,sys; print(json.dumps(sys.argv[1]))" "$3")
+        curl -sS -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" \
+            -H "Host: ${URL##http://}" \
+            -d "{\"version\":1,\"method\":\"page.eval\",\"params\":{\"id\":\"$2\",\"script\":$ESCAPED}}" \
+            "$URL/agent" | format_result
         ;;
 
     screenshot)
-        if [ -z "${2:-}" ]; then
-            echo "Usage: browser-ctl screenshot <tab-id> [output.png]" >&2
-            exit 1
-        fi
+        [ -n "${2:-}" ] || die "Usage: browser-ctl screenshot <id> [output.png]"
         OUTPUT="${3:-screenshot.png}"
-        api GET "/api/tabs/$2/screenshot" -o "$OUTPUT"
-        echo "Screenshot saved to $OUTPUT"
+        agent_call "page.screenshot" "id=$2" | save_screenshot "$OUTPUT"
         ;;
 
     help|--help|-h)
-        cat <<EOF
-browser-ctl: Control Agent Browser from the terminal.
+        cat <<'EOF'
+browser-ctl: Control a running Agent Browser from the terminal.
 
 Commands:
-  health                          Check if browser is running
-  tabs                            List all open tabs
-  get <tab-id>                    Get details for a specific tab
-  open <url>                      Open a URL in a new tab
-  read <tab-id>                   Read page content (text) from a live tab
-  read <tab-id> --html            Read page content including HTML
-  js <tab-id> <script>            Execute JavaScript in a tab
-  screenshot <tab-id> [file.png]  Capture tab screenshot
+  health                           Check if browser is running
+  tabs                             List all open tabs (JSON)
+  tab <id>                         Get details for a tab
+  open <url>                       Open URL in a new tab
+  read <id> [--text|--html]        Read page content (default: markdown)
+  eval <id> '<script>'             Execute JavaScript in a tab
+  screenshot <id> [file.png]       Save tab screenshot
+
+All responses use the structured protocol:
+  {"ok": true, "result": ...}  or  {"ok": false, "error": {"code": "...", "message": "..."}}
 
 Tab IDs are UUIDs. Get them from 'browser-ctl tabs'.
-
-The browser writes its connection info to:
-  ~/.config/agent-browser/connection.json
+Connection info: ~/.config/agent-browser/connection.json
 
 Examples:
   browser-ctl tabs
   browser-ctl open https://github.com
-  browser-ctl read 7A91B3F2-...
-  browser-ctl js 7A91B3F2-... 'return document.title'
-  browser-ctl screenshot 7A91B3F2-... page.png
+  browser-ctl read <id>                    # Markdown extraction
+  browser-ctl read <id> --text             # Raw innerText
+  browser-ctl eval <id> 'return document.title'
+  browser-ctl screenshot <id> page.png
 EOF
         ;;
 
     *)
-        echo "Unknown command: $1. Run 'browser-ctl help' for usage." >&2
-        exit 1
+        die "Unknown command: $1. Run 'browser-ctl help' for usage."
         ;;
 esac

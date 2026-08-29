@@ -1,18 +1,28 @@
 import Foundation
 import Network
 
-/// Minimal HTTP server on 127.0.0.1 that exposes BrowserAutomationService
-/// to external processes (CLI tools, MCP clients, coding agents).
+/// HTTP server on 127.0.0.1 that exposes BrowserAutomationService via the
+/// versioned AgentRequest/AgentResponse protocol.
 ///
-/// Uses Network.framework's NWListener -- zero third-party dependencies.
-/// Binds to loopback only; external machines cannot connect.
+/// Transport layer only -- all browser logic lives in BrowserAutomationService.
+///
+/// Security model:
+/// - Binds to loopback only (127.0.0.1). External machines cannot connect.
+/// - Bearer token authentication on all endpoints except /health.
+/// - Host header validation prevents DNS rebinding attacks.
+/// - Token generated per-launch via SecRandomCopyBytes (32 bytes, base64url).
+/// - Connection descriptor at ~/.config/agent-browser/connection.json (mode 0600).
+///
+/// Trust boundary: any local process running as the current user that can read
+/// the connection descriptor can control the browser. This is the same trust
+/// boundary as the user's filesystem. A more granular per-agent permission
+/// model is a future addition.
 final class AgentHTTPServer {
     private let automationService: BrowserAutomationService
     private var listener: NWListener?
     private let requestedPort: UInt16
     let token: String
 
-    /// Actual port after binding (may differ from requested if fallback was needed).
     private(set) var boundPort: UInt16 = 0
 
     init(automationService: BrowserAutomationService, port: UInt16 = 8833) {
@@ -53,15 +63,13 @@ final class AgentHTTPServer {
                         self.boundPort = port
                         self.writeConnectionDescriptor()
                         print("[AgentHTTPServer] Listening on http://127.0.0.1:\(port)")
-                        print("[AgentHTTPServer] Token: \(self.token)")
                     case .failed(let error):
                         print("[AgentHTTPServer] Failed on port \(port): \(error)")
                         self.listener?.cancel()
                         if attempt < 10 {
                             self.tryBind(port: port + 1, attempt: attempt + 1)
                         }
-                    default:
-                        break
+                    default: break
                     }
                 }
             }
@@ -85,209 +93,184 @@ final class AgentHTTPServer {
 
     private func handleConnection(_ connection: NWConnection) {
         connection.start(queue: .main)
-
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 1_048_576) { [weak self] data, _, _, error in
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 1_048_576) { [weak self] data, _, _, _ in
             DispatchQueue.main.async {
-                guard let self, let data else {
+                guard let self, let data, let raw = String(data: data, encoding: .utf8) else {
                     connection.cancel()
                     return
                 }
-
-                guard let requestString = String(data: data, encoding: .utf8) else {
-                    self.sendResponse(connection, status: 400, body: ["error": "Invalid request"])
-                    return
-                }
-
-                self.routeRequest(connection, raw: requestString)
+                self.routeRequest(connection, raw: raw)
             }
         }
     }
 
     // MARK: - Routing
 
+    /// Two API surfaces:
+    /// 1. POST /agent -- structured protocol (AgentRequest/AgentResponse)
+    /// 2. REST endpoints -- convenience for curl/CLI use
+    /// Both go through the same BrowserAutomationService.
     private func routeRequest(_ connection: NWConnection, raw: String) {
-        let lines = raw.split(separator: "\r\n", maxSplits: 1)
-        guard let requestLine = lines.first else {
-            sendResponse(connection, status: 400, body: ["error": "Empty request"])
-            return
-        }
+        let (method, path, headers) = parseRequestLine(raw)
 
-        let parts = requestLine.split(separator: " ")
-        guard parts.count >= 2 else {
-            sendResponse(connection, status: 400, body: ["error": "Malformed request line"])
-            return
-        }
-
-        let method = String(parts[0])
-        let path = String(parts[1])
-        let headers = parseHeaders(raw)
-
-        // Security: validate Host header (DNS rebinding defense)
+        // Security: Host header validation
         if let host = headers["host"] {
-            let allowed = [
-                "127.0.0.1:\(boundPort)", "localhost:\(boundPort)",
-                "127.0.0.1", "localhost"
-            ]
+            let allowed = ["127.0.0.1:\(boundPort)", "localhost:\(boundPort)", "127.0.0.1", "localhost"]
             if !allowed.contains(host.lowercased()) {
-                sendResponse(connection, status: 403, body: ["error": "Forbidden: invalid Host header"])
+                sendJSON(connection, status: 403, value: AgentResponse.failure(
+                    code: "FORBIDDEN", message: "Invalid Host header"))
                 return
             }
         }
 
-        // Security: validate bearer token (skip for /health)
-        if path != "/health" {
-            let authHeader = headers["authorization"] ?? ""
-            if authHeader != "Bearer \(token)" {
-                sendResponse(connection, status: 401, body: ["error": "Unauthorized"])
-                return
-            }
+        // Health check -- no auth
+        if path == "/health" {
+            sendJSON(connection, status: 200, value: ["status": "ok", "browser": "Agent Browser", "version": "0.2.0"])
+            return
         }
 
-        let jsonBody = extractJSONBody(from: raw)
+        // Auth check
+        let authHeader = headers["authorization"] ?? ""
+        guard authHeader == "Bearer \(token)" else {
+            sendJSON(connection, status: 401, value: AgentResponse.failure(
+                code: "UNAUTHORIZED", message: "Invalid or missing bearer token"))
+            return
+        }
 
-        // All automation calls must happen on @MainActor
+        let body = extractJSONBody(from: raw)
+
         Task { @MainActor in
-            await self.dispatch(connection, method: method, path: path, body: jsonBody)
+            // Route: structured protocol or REST
+            if method == "POST" && path == "/agent" {
+                await self.handleStructuredRequest(connection, body: body)
+            } else {
+                await self.handleRESTRequest(connection, method: method, path: path, body: body)
+            }
         }
     }
+
+    // MARK: - Structured Protocol (POST /agent)
 
     @MainActor
-    private func dispatch(_ connection: NWConnection, method: String, path: String, body: [String: Any]?) async {
-        switch (method, path) {
-
-        case ("GET", "/health"):
-            sendResponse(connection, status: 200, body: [
-                "status": "ok",
-                "browser": "Agent Browser",
-                "tabs": automationService.listTabs().count
-            ])
-
-        case ("GET", "/api/tabs"):
-            sendCodableResponse(connection, status: 200, value: automationService.listTabs())
-
-        case ("GET", _) where path.hasPrefix("/api/tabs/") && !path.contains("/read") && !path.contains("/js") && !path.contains("/screenshot"):
-            let tabID = String(path.dropFirst("/api/tabs/".count))
-            do {
-                let detail = try automationService.getTab(id: tabID)
-                sendCodableResponse(connection, status: 200, value: detail)
-            } catch {
-                sendResponse(connection, status: 404, body: ["error": error.localizedDescription])
-            }
-
-        case ("POST", "/api/tabs"):
-            guard let urlString = body?["url"] as? String else {
-                sendResponse(connection, status: 400, body: ["error": "Missing 'url' in request body"])
-                return
-            }
-            do {
-                let result = try automationService.openURL(urlString)
-                sendCodableResponse(connection, status: 201, value: result)
-            } catch {
-                sendResponse(connection, status: 400, body: ["error": error.localizedDescription])
-            }
-
-        case (_, _) where path.hasSuffix("/read"):
-            let tabID = extractTabID(from: path, suffix: "/read")
-            let includeHTML = (body?["html"] as? Bool) ?? false
-            do {
-                let content = try await automationService.readPage(id: tabID, includeHTML: includeHTML)
-                sendCodableResponse(connection, status: 200, value: content)
-            } catch {
-                sendResponse(connection, status: 404, body: ["error": error.localizedDescription])
-            }
-
-        case ("POST", _) where path.hasSuffix("/js"):
-            let tabID = extractTabID(from: path, suffix: "/js")
-            guard let script = body?["script"] as? String else {
-                sendResponse(connection, status: 400, body: ["error": "Missing 'script' in request body"])
-                return
-            }
-            do {
-                let result = try await automationService.executeJavaScript(id: tabID, script: script)
-                sendCodableResponse(connection, status: 200, value: result)
-            } catch {
-                sendResponse(connection, status: 500, body: ["error": error.localizedDescription])
-            }
-
-        case ("GET", _) where path.hasSuffix("/screenshot"):
-            let tabID = extractTabID(from: path, suffix: "/screenshot")
-            do {
-                let result = try await automationService.screenshot(id: tabID)
-                sendPNGResponse(connection, data: result.pngData)
-            } catch {
-                sendResponse(connection, status: 404, body: ["error": error.localizedDescription])
-            }
-
-        default:
-            sendResponse(connection, status: 404, body: ["error": "Not found: \(method) \(path)"])
-        }
-    }
-
-    // MARK: - HTTP Response Helpers
-
-    private func sendResponse(_ connection: NWConnection, status: Int, body: [String: Any]) {
-        guard let jsonData = try? JSONSerialization.data(withJSONObject: body, options: [.prettyPrinted, .sortedKeys]) else {
-            connection.cancel()
+    private func handleStructuredRequest(_ connection: NWConnection, body: [String: Any]?) async {
+        guard let body,
+              let data = try? JSONSerialization.data(withJSONObject: body),
+              let request = try? JSONDecoder().decode(AgentRequest.self, from: data) else {
+            sendJSON(connection, status: 400, value: AgentResponse.failure(
+                code: ErrorCode.badRequest, message: "Invalid AgentRequest JSON"))
             return
         }
-        sendRawResponse(connection, status: status, contentType: "application/json", body: jsonData)
+
+        let response = await automationService.dispatch(request)
+        sendJSON(connection, status: response.ok ? 200 : 400, value: response)
     }
 
-    private func sendCodableResponse<T: Encodable>(_ connection: NWConnection, status: Int, value: T) {
+    // MARK: - REST Convenience Endpoints
+
+    @MainActor
+    private func handleRESTRequest(_ connection: NWConnection, method: String, path: String, body: [String: Any]?) async {
+        // Parse path segments: /api/tabs, /api/tabs/:id, /api/tabs/:id/read, etc.
+        let segments = path.split(separator: "/").map(String.init)
+
+        // GET /api/tabs
+        if method == "GET" && segments == ["api", "tabs"] {
+            let resp = await automationService.dispatch(AgentRequest(method: "tabs.list"))
+            sendJSON(connection, status: 200, value: resp)
+            return
+        }
+
+        // POST /api/tabs  {"url": "..."}
+        if method == "POST" && segments == ["api", "tabs"] {
+            let url = body?["url"] as? String ?? ""
+            let resp = await automationService.dispatch(AgentRequest(
+                method: "tabs.open", params: ["url": AnyCodable(url)]))
+            sendJSON(connection, status: resp.ok ? 201 : 400, value: resp)
+            return
+        }
+
+        // Routes with tab ID: /api/tabs/:id[/action]
+        if segments.count >= 3 && segments[0] == "api" && segments[1] == "tabs" {
+            let tabID = segments[2]
+            let action = segments.count > 3 ? segments[3] : nil
+
+            switch (method, action) {
+            case ("GET", nil):
+                let resp = await automationService.dispatch(AgentRequest(
+                    method: "tabs.get", params: ["id": AnyCodable(tabID)]))
+                sendJSON(connection, status: resp.ok ? 200 : 404, value: resp)
+
+            case (_, "read"):
+                let format = body?["format"] as? String ?? "markdown"
+                let resp = await automationService.dispatch(AgentRequest(
+                    method: "page.read",
+                    params: ["id": AnyCodable(tabID), "format": AnyCodable(format)]))
+                sendJSON(connection, status: resp.ok ? 200 : 400, value: resp)
+
+            case ("POST", "js"):
+                let script = body?["script"] as? String ?? ""
+                let resp = await automationService.dispatch(AgentRequest(
+                    method: "page.eval",
+                    params: ["id": AnyCodable(tabID), "script": AnyCodable(script)]))
+                sendJSON(connection, status: resp.ok ? 200 : 400, value: resp)
+
+            case ("GET", "screenshot"):
+                let resp = await automationService.dispatch(AgentRequest(
+                    method: "page.screenshot", params: ["id": AnyCodable(tabID)]))
+                sendJSON(connection, status: resp.ok ? 200 : 400, value: resp)
+
+            default:
+                sendJSON(connection, status: 404, value: AgentResponse.failure(
+                    code: ErrorCode.unknownMethod, message: "Not found: \(method) \(path)"))
+            }
+            return
+        }
+
+        sendJSON(connection, status: 404, value: AgentResponse.failure(
+            code: ErrorCode.unknownMethod, message: "Not found: \(method) \(path)"))
+    }
+
+    // MARK: - HTTP Response
+
+    private func sendJSON(_ connection: NWConnection, status: Int, value: some Encodable) {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         guard let jsonData = try? encoder.encode(value) else {
-            sendResponse(connection, status: 500, body: ["error": "Failed to encode response"])
+            connection.cancel()
             return
         }
-        sendRawResponse(connection, status: status, contentType: "application/json", body: jsonData)
-    }
 
-    private func sendPNGResponse(_ connection: NWConnection, data: Data) {
-        sendRawResponse(connection, status: 200, contentType: "image/png", body: data)
-    }
-
-    private func sendRawResponse(_ connection: NWConnection, status: Int, contentType: String, body: Data) {
-        let statusText: String
-        switch status {
-        case 200: statusText = "OK"
-        case 201: statusText = "Created"
-        case 400: statusText = "Bad Request"
-        case 401: statusText = "Unauthorized"
-        case 403: statusText = "Forbidden"
-        case 404: statusText = "Not Found"
-        case 500: statusText = "Internal Server Error"
-        default: statusText = "Unknown"
-        }
-
+        let statusText = Self.httpStatusText(status)
         var header = "HTTP/1.1 \(status) \(statusText)\r\n"
-        header += "Content-Type: \(contentType)\r\n"
-        header += "Content-Length: \(body.count)\r\n"
+        header += "Content-Type: application/json\r\n"
+        header += "Content-Length: \(jsonData.count)\r\n"
         header += "Connection: close\r\n"
         header += "\r\n"
 
-        var responseData = Data(header.utf8)
-        responseData.append(body)
-
-        connection.send(content: responseData, completion: .contentProcessed { _ in
-            connection.cancel()
-        })
+        var data = Data(header.utf8)
+        data.append(jsonData)
+        connection.send(content: data, completion: .contentProcessed { _ in connection.cancel() })
     }
 
-    // MARK: - Parsing Helpers
+    // MARK: - Parsing
 
-    private func parseHeaders(_ raw: String) -> [String: String] {
+    private func parseRequestLine(_ raw: String) -> (method: String, path: String, headers: [String: String]) {
         var headers: [String: String] = [:]
         let lines = raw.components(separatedBy: "\r\n")
+        guard let first = lines.first else { return ("", "", [:]) }
+
+        let parts = first.split(separator: " ")
+        let method = parts.count > 0 ? String(parts[0]) : ""
+        let path = parts.count > 1 ? String(parts[1]) : ""
+
         for line in lines.dropFirst() {
             if line.isEmpty { break }
-            if let colonIndex = line.firstIndex(of: ":") {
-                let key = String(line[line.startIndex..<colonIndex]).trimmingCharacters(in: .whitespaces).lowercased()
-                let value = String(line[line.index(after: colonIndex)...]).trimmingCharacters(in: .whitespaces)
-                headers[key] = value
+            if let colon = line.firstIndex(of: ":") {
+                let key = String(line[..<colon]).trimmingCharacters(in: .whitespaces).lowercased()
+                let val = String(line[line.index(after: colon)...]).trimmingCharacters(in: .whitespaces)
+                headers[key] = val
             }
         }
-        return headers
+        return (method, path, headers)
     }
 
     private func extractJSONBody(from raw: String) -> [String: Any]? {
@@ -295,21 +278,21 @@ final class AgentHTTPServer {
         let bodyString = String(raw[range.upperBound...])
         guard !bodyString.isEmpty,
               let data = bodyString.data(using: .utf8),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return nil
-        }
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
         return json
     }
 
-    private func extractTabID(from path: String, suffix: String) -> String {
-        var cleaned = path
-        if cleaned.hasPrefix("/api/tabs/") {
-            cleaned = String(cleaned.dropFirst("/api/tabs/".count))
+    private static func httpStatusText(_ code: Int) -> String {
+        switch code {
+        case 200: return "OK"
+        case 201: return "Created"
+        case 400: return "Bad Request"
+        case 401: return "Unauthorized"
+        case 403: return "Forbidden"
+        case 404: return "Not Found"
+        case 500: return "Internal Server Error"
+        default: return "Unknown"
         }
-        if cleaned.hasSuffix(suffix) {
-            cleaned = String(cleaned.dropLast(suffix.count))
-        }
-        return cleaned
     }
 
     // MARK: - Token
@@ -334,7 +317,7 @@ final class AgentHTTPServer {
             "url": "http://127.0.0.1:\(boundPort)",
             "token": token,
             "pid": ProcessInfo.processInfo.processIdentifier,
-            "version": "0.1.0"
+            "version": "0.2.0"
         ]
 
         let path = dir.appendingPathComponent("connection.json")
