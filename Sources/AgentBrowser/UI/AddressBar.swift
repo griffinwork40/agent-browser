@@ -19,7 +19,7 @@ final class AddressBar: NSTextField {
             // Explicit scheme + host → navigate directly
             if let url = URL(string: trimmed),
                let scheme = url.scheme,
-               ["http", "https", "file"].contains(scheme.lowercased()),
+               ["http", "https"].contains(scheme.lowercased()),
                url.host != nil {
                 return .navigate(url)
             }

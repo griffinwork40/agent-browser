@@ -74,7 +74,8 @@ final class ProfileManager {
             let script = WKUserScript(
                 source: bridgeJS,
                 injectionTime: .atDocumentEnd,
-                forMainFrameOnly: true
+                forMainFrameOnly: true,
+                in: .world(name: "AgentBridge")
             )
             config.userContentController.addUserScript(script)
         }

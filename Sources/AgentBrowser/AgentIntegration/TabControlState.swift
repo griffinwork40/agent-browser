@@ -57,6 +57,7 @@ final class TabControlState: Identifiable {
     /// Agent action failed
     func agentFailed() {
         guard state == .agentActive || state == .interrupting else { return }
+        activeAgentID = nil
         transition(to: .error)
     }
 

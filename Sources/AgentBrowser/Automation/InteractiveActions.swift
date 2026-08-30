@@ -29,12 +29,15 @@ extension BrowserAutomationService {
             completion(.failure(code: ErrorCode.tabNotFound, message: "No tab with id: \(id)")); return
         }
         let tabID = tab.id.uuidString
-        tab.webView.evaluateJavaScript(script) { result, error in
+        // The bridge lives in the isolated AgentBridge content world.
+        tab.webView.evaluateJavaScript(script, in: nil, in: .world(name: "AgentBridge")) { resultOrError in
             DispatchQueue.main.async {
-                if let error {
-                    completion(.failure(code: ErrorCode.javaScriptError, message: error.localizedDescription)); return
+                switch resultOrError {
+                case .failure(let error):
+                    completion(.failure(code: ErrorCode.javaScriptError, message: error.localizedDescription))
+                case .success(let result):
+                    completion(Self.parseActionResult(raw: result, tabID: tabID, elementId: elementId, action: action))
                 }
-                completion(Self.parseActionResult(raw: result, tabID: tabID, elementId: elementId, action: action))
             }
         }
     }
@@ -73,7 +76,7 @@ extension BrowserAutomationService {
         }
 
         do {
-            let raw = try await evalJSOnTab(tab, script: script)
+            let raw = try await evalJSOnTabInBridgeWorld(tab, script: script)
             return Self.parseActionResult(raw: raw, tabID: tab.id.uuidString, elementId: elementId, action: action)
         } catch {
             return .failure(code: ErrorCode.javaScriptError, message: error.localizedDescription)
@@ -117,27 +120,33 @@ extension BrowserAutomationService {
         case "text":
             let escaped = escapeJSString(value ?? "")
             let script = "JSON.stringify(window.__agentBrowser.waitForText('\(escaped)', \(Int(timeout * 1000))))"
-            tab.webView.evaluateJavaScript(script) { result, error in
+            // The bridge lives in the isolated AgentBridge content world.
+            tab.webView.evaluateJavaScript(script, in: nil, in: .world(name: "AgentBridge")) { resultOrError in
                 DispatchQueue.main.async {
                     let elapsed = CFAbsoluteTimeGetCurrent() - start
-                    if let error {
-                        completion(.failure(code: ErrorCode.javaScriptError, message: error.localizedDescription)); return
+                    switch resultOrError {
+                    case .failure(let error):
+                        completion(.failure(code: ErrorCode.javaScriptError, message: error.localizedDescription))
+                    case .success(let result):
+                        let err = Self.parseWaitError(raw: result)
+                        completion(.success(WaitResult(ok: err == nil, id: tabID, condition: "text", elapsed: elapsed, error: err)))
                     }
-                    let err = Self.parseWaitError(raw: result)
-                    completion(.success(WaitResult(ok: err == nil, id: tabID, condition: "text", elapsed: elapsed, error: err)))
                 }
             }
         case "element":
             let condJSON = Self.buildWaitCondition(value: value)
             let script = "JSON.stringify(window.__agentBrowser.waitForElement(\(condJSON), \(Int(timeout * 1000))))"
-            tab.webView.evaluateJavaScript(script) { result, error in
+            // The bridge lives in the isolated AgentBridge content world.
+            tab.webView.evaluateJavaScript(script, in: nil, in: .world(name: "AgentBridge")) { resultOrError in
                 DispatchQueue.main.async {
                     let elapsed = CFAbsoluteTimeGetCurrent() - start
-                    if let error {
-                        completion(.failure(code: ErrorCode.javaScriptError, message: error.localizedDescription)); return
+                    switch resultOrError {
+                    case .failure(let error):
+                        completion(.failure(code: ErrorCode.javaScriptError, message: error.localizedDescription))
+                    case .success(let result):
+                        let err = Self.parseWaitError(raw: result)
+                        completion(.success(WaitResult(ok: err == nil, id: tabID, condition: "element", elapsed: elapsed, error: err)))
                     }
-                    let err = Self.parseWaitError(raw: result)
-                    completion(.success(WaitResult(ok: err == nil, id: tabID, condition: "element", elapsed: elapsed, error: err)))
                 }
             }
         default: // "load"
@@ -174,7 +183,7 @@ extension BrowserAutomationService {
             }
             return .success(WaitResult(ok: err == nil, id: tabID, condition: "load", elapsed: elapsed, error: err))
         default:
-            // text/element use JS-side polling
+            // text/element use JS-side polling in the AgentBridge content world.
             let script: String
             if condition == "text" {
                 script = "JSON.stringify(window.__agentBrowser.waitForText('\(escapeJSString(value ?? ""))', \(Int(timeout * 1000))))"
@@ -183,7 +192,7 @@ extension BrowserAutomationService {
                 script = "JSON.stringify(window.__agentBrowser.waitForElement(\(cond), \(Int(timeout * 1000))))"
             }
             do {
-                let raw = try await evalJSOnTab(tab, script: script)
+                let raw = try await evalJSOnTabInBridgeWorld(tab, script: script)
                 let elapsed = CFAbsoluteTimeGetCurrent() - start
                 let err = Self.parseWaitError(raw: raw)
                 return .success(WaitResult(ok: err == nil, id: tabID, condition: condition, elapsed: elapsed, error: err))

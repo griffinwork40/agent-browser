@@ -128,6 +128,15 @@ final class AgentHTTPServer {
             respond(conn, AgentResponse.failure(code: "FORBIDDEN", message: "Invalid Host")); return
         }
 
+        // CORS protection — reject any cross-origin request. A browser-based page
+        // sending fetch() to the local API will include an Origin header; rejecting
+        // it prevents CSRF attacks from pages loaded in the browser itself.
+        if let origin = headers["origin"], !origin.isEmpty {
+            sendHTTP(conn, status: 403, contentType: "application/json",
+                     body: Data(#"{"error":"FORBIDDEN","message":"Cross-origin requests are not allowed"}"#.utf8))
+            return
+        }
+
         // Health (no auth)
         if path == "/health" {
             respondRaw(conn, status: 200, json: ["status": "ok", "browser": "Agent Browser", "version": "0.3.0"]); return
@@ -299,6 +308,7 @@ final class AgentHTTPServer {
         let tmpPath = dir.appendingPathComponent(".connection.json.tmp")
         let attributes: [FileAttributeKey: Any] = [.posixPermissions: 0o600]
         FileManager.default.createFile(atPath: tmpPath.path, contents: data, attributes: attributes)
+        try? FileManager.default.removeItem(at: finalPath)
         try? FileManager.default.moveItem(at: tmpPath, to: finalPath)
     }
 

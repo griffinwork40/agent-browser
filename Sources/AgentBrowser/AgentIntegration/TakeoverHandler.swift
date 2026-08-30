@@ -34,7 +34,7 @@ final class TakeoverHandler {
     /// Check if an agent can start an action on a tab
     func canAgentAct(on tabID: UUID) -> Bool {
         let state = controlState(for: tabID)
-        return state.state == .idle || state.state == .agentActive
+        return state.state == .idle
     }
 
     /// Begin agent action on a tab; returns false if tab is not available

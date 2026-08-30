@@ -163,14 +163,14 @@ final class BrowserTab: Identifiable {
 
         // Inject the automation bridge into every page for element inspection,
         // click, fill, press, select, and wait operations.
-        // Runs in the page content world so evaluateJavaScript() can access
-        // window.__agentBrowser directly. The bridge is safe to expose --
-        // it only provides inspection and interaction helpers, no privileged APIs.
+        // Runs in an isolated content world ("AgentBridge") so page JS cannot
+        // access window.__agentBrowser or tamper with the bridge.
         if let bridgeJS = Self.loadAutomationBridge() {
             let script = WKUserScript(
                 source: bridgeJS,
                 injectionTime: .atDocumentEnd,
-                forMainFrameOnly: true
+                forMainFrameOnly: true,
+                in: .world(name: "AgentBridge")
             )
             config.userContentController.addUserScript(script)
         }

@@ -262,7 +262,18 @@ final class BrowserWindowController: NSWindowController {
             onSwitchProfile: { [weak self] id in
                 guard let self else { return }
                 self.profileManager.switchTo(profileID: id)
-                // TODO: recreate tabs with new profile's data store in future
+                // Close all existing tabs so they don't retain the old profile's
+                // WKWebsiteDataStore. Tabs created before the switch keep their
+                // original data store reference; the only safe approach is to
+                // close them and open a fresh tab bound to the new profile.
+                // Limitation: unsaved form data / scroll positions are lost.
+                let existing = self.tabManager.tabs
+                let newTab = self.tabManager.createTab(profileID: id)
+                self.tabManager.select(tab: newTab)
+                for tab in existing {
+                    self.tabManager.closeTab(tab)
+                }
+                self.syncDisplayedTab()
                 self.updateSidebar()
             },
             onCreateProfile: { [weak self] in
