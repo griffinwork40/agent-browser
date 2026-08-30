@@ -262,7 +262,9 @@ final class BrowserWindowController: NSWindowController {
             onSwitchProfile: { [weak self] id in
                 guard let self else { return }
                 self.profileManager.switchTo(profileID: id)
-                // TODO: recreate tabs with new profile's data store in future
+                // Profile switch only affects new tabs — existing tabs keep their
+                // original data store. New tabs created after this call will use
+                // profileManager.activeProfileID via TabManager.createTab().
                 self.updateSidebar()
             },
             onCreateProfile: { [weak self] in
