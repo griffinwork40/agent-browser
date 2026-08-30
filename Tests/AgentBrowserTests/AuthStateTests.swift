@@ -120,4 +120,33 @@ struct AuthStateTests {
         let state = handler.controlState(for: tabID)
         #expect(state.state == .idle)  // must remain idle
     }
+
+    // MARK: - agentCompletes / agentFailed from awaitingAuth (items 5 & 6)
+
+    @Test("agentCompletes from awaitingAuth transitions to idle and clears auth fields")
+    @MainActor func agentCompletesFromAwaitingAuth() {
+        let state = TabControlState(tabID: UUID())
+        state.agentBegins(agentID: "agent-1")
+        state.awaitAuth(reason: "Login required")
+        #expect(state.state == .awaitingAuth)
+
+        state.agentCompletes()
+
+        #expect(state.state == .idle)
+        #expect(state.authReason == nil)
+        #expect(state.activeAgentID == nil)
+    }
+
+    @Test("agentFailed from awaitingAuth transitions to error and clears authReason")
+    @MainActor func agentFailedFromAwaitingAuth() {
+        let state = TabControlState(tabID: UUID())
+        state.agentBegins(agentID: "agent-1")
+        state.awaitAuth(reason: "Auth timed out")
+        #expect(state.state == .awaitingAuth)
+
+        state.agentFailed()
+
+        #expect(state.state == .error)
+        #expect(state.authReason == nil)
+    }
 }

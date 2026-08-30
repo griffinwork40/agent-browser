@@ -235,9 +235,12 @@ struct AuthStatusResult: Codable, Sendable {
     let signals: [[String: String]]
 
     init(from dict: [String: Any]) {
-        self.status = dict["status"] as? String ?? "authenticated"
+        // Default to "unknown" rather than "authenticated" so a missing/invalid
+        // status field does not silently report the page as authenticated.
+        self.status = dict["status"] as? String ?? "unknown"
         self.url = dict["url"] as? String ?? ""
-        self.title = dict["title"] as? String ?? ""
+        let rawTitle = dict["title"] as? String ?? ""
+        self.title = Self.sanitize(rawTitle, maxLength: 256)
 
         if let sigs = dict["signals"] as? [[String: Any]] {
             self.signals = sigs.map { sig in
@@ -248,5 +251,17 @@ struct AuthStatusResult: Codable, Sendable {
         } else {
             self.signals = []
         }
+    }
+
+    /// Sanitize a page title: truncate to `maxLength` and strip ASCII control
+    /// characters (< 0x20) except horizontal tab (0x09) and newline (0x0A).
+    private static func sanitize(_ raw: String, maxLength: Int) -> String {
+        let truncated = raw.count > maxLength
+            ? String(raw.unicodeScalars.prefix(maxLength))
+            : raw
+        return truncated.unicodeScalars.filter { scalar in
+            let v = scalar.value
+            return v >= 0x20 || v == 0x09 || v == 0x0A
+        }.reduce(into: "") { $0 += String($1) }
     }
 }

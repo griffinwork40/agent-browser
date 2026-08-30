@@ -46,11 +46,16 @@ final class TabControlState: Identifiable {
 
     /// Agent completes its action normally
     func agentCompletes() {
-        guard state == .agentActive || state == .interrupting else { return }
+        guard state == .agentActive || state == .interrupting || state == .awaitingAuth else { return }
         if state == .interrupting {
             // Was interrupted; hand off to human
             interruptTrigger = nil
             transition(to: .humanOwns)
+        } else if state == .awaitingAuth {
+            // Agent completed while awaiting auth (e.g. auth resolved externally)
+            activeAgentID = nil
+            authReason = nil
+            transition(to: .idle)
         } else {
             activeAgentID = nil
             transition(to: .idle)
@@ -59,9 +64,10 @@ final class TabControlState: Identifiable {
 
     /// Agent action failed
     func agentFailed() {
-        guard state == .agentActive || state == .interrupting else { return }
+        guard state == .agentActive || state == .interrupting || state == .awaitingAuth else { return }
         activeAgentID = nil
         interruptTrigger = nil
+        authReason = nil
         transition(to: .error)
     }
 

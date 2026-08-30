@@ -55,30 +55,35 @@ extension BrowserAutomationService {
         }
 
         // Step 2: Inject the credential directly into the DOM via the JS bridge.
-        // The credential value is passed into JS and immediately discarded.
-        let escapedId = escapeJSString(elementId)
-        let escapedValue = escapeJSString(credential)
-
-        let script = "window.__agentBrowser.fill('\(escapedId)', '\(escapedValue)')"
-
-        tab.webView.evaluateJavaScript(
-            script, in: nil, in: .world(name: "AgentBridge")
-        ) { resultOrError in
+        // Use callAsyncJavaScript with structured arguments so the credential is
+        // passed as a data binding, never interpolated into JS source code.
+        let script = "return window.__agentBrowser.fill(elementId, value)"
+        DispatchQueue.global(qos: .userInitiated).async {
+            // keychainLookup was already called above; now eval JS on main thread.
             DispatchQueue.main.async {
-                switch resultOrError {
-                case .failure(let error):
-                    completion(.failure(
-                        code: ErrorCode.javaScriptError,
-                        message: error.localizedDescription
-                    ))
-                case .success(let raw):
-                    let response = Self.parseActionResult(
-                        raw: raw,
-                        tabID: tab.id.uuidString,
-                        elementId: elementId,
-                        action: "fillFromKeychain"
-                    )
-                    completion(response)
+                tab.webView.callAsyncJavaScript(
+                    script,
+                    arguments: ["elementId": elementId, "value": credential],
+                    in: nil,
+                    in: .world(name: "AgentBridge")
+                ) { resultOrError in
+                    DispatchQueue.main.async {
+                        switch resultOrError {
+                        case .failure(let error):
+                            completion(.failure(
+                                code: ErrorCode.javaScriptError,
+                                message: error.localizedDescription
+                            ))
+                        case .success(let raw):
+                            let response = Self.parseActionResult(
+                                raw: raw,
+                                tabID: tab.id.uuidString,
+                                elementId: elementId,
+                                action: "fillFromKeychain"
+                            )
+                            completion(response)
+                        }
+                    }
                 }
             }
         }
@@ -110,12 +115,23 @@ extension BrowserAutomationService {
             return .failure(code: ErrorCode.keychainError, message: "No credential found")
         }
 
-        let escapedId = escapeJSString(elementId)
-        let escapedValue = escapeJSString(credential)
-        let script = "window.__agentBrowser.fill('\(escapedId)', '\(escapedValue)')"
-
+        // Use callAsyncJavaScript with structured arguments so the credential is
+        // passed as a data binding, never interpolated into JS source code.
+        let script = "return window.__agentBrowser.fill(elementId, value)"
         do {
-            let raw = try await evalJSOnTabInBridgeWorld(tab, script: script)
+            let raw = try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Any?, Error>) in
+                tab.webView.callAsyncJavaScript(
+                    script,
+                    arguments: ["elementId": elementId, "value": credential],
+                    in: nil,
+                    in: .world(name: "AgentBridge")
+                ) { result in
+                    switch result {
+                    case .failure(let error): cont.resume(throwing: error)
+                    case .success(let value): cont.resume(returning: value)
+                    }
+                }
+            }
             return Self.parseActionResult(
                 raw: raw,
                 tabID: tab.id.uuidString,
@@ -135,6 +151,13 @@ extension BrowserAutomationService {
     /// Look up a credential from the macOS Keychain.
     /// Returns the credential string or nil + error message.
     /// The OS will display a native permission dialog before returning.
+    ///
+    /// This query intentionally does NOT restrict `kSecAttrAccessGroup`, which means
+    /// it searches across all keychain groups accessible to this process. This is by
+    /// design: the OS shows a native Touch ID / password dialog for each access,
+    /// and that permission dialog serves as the access-control boundary — not
+    /// app-scoped keychain group filtering. Restricting to a single group would
+    /// silently exclude credentials stored by the browser or password manager.
     ///
     /// - Parameters:
     ///   - domain: The server/domain to scope the keychain query.
@@ -209,9 +232,13 @@ extension BrowserAutomationService {
 
     /// List available accounts for a domain (no passwords returned).
     /// Used by auth.accounts to let the agent know which accounts exist.
+    /// Uses interactionNotAllowed = true because this reads only metadata
+    /// (account names, not secrets) — no auth UI is needed or appropriate.
+    /// If some items are interaction-protected, errSecInteractionNotAllowed is
+    /// handled gracefully by returning whatever accounts were accessible.
     func keychainAccounts(domain: String) -> (accounts: [String]?, error: String?) {
         let context = LAContext()
-        context.interactionNotAllowed = false
+        context.interactionNotAllowed = true
 
         let query: [String: Any] = [
             kSecClass as String: kSecClassInternetPassword,
@@ -225,6 +252,12 @@ extension BrowserAutomationService {
         let status = SecItemCopyMatching(query as CFDictionary, &result)
 
         if status == errSecItemNotFound {
+            return ([], nil)
+        }
+
+        // If interaction is required for protected items, return what we got.
+        // A nil result here just means no unprotected attributes were accessible.
+        if status == errSecInteractionNotAllowed {
             return ([], nil)
         }
 
