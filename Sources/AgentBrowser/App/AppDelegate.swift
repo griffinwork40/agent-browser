@@ -77,6 +77,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hardReloadItem.keyEquivalentModifierMask = [.command, .shift]
         viewMenu.addItem(hardReloadItem)
         viewMenu.addItem(.separator())
+        let toggleSidebarItem = NSMenuItem(
+            title: "Toggle Sidebar",
+            action: #selector(BrowserWindowController.toggleSidebar(_:)),
+            keyEquivalent: "L"
+        )
+        toggleSidebarItem.keyEquivalentModifierMask = [.command, .shift]
+        viewMenu.addItem(toggleSidebarItem)
+        viewMenu.addItem(.separator())
         viewMenu.addItem(NSMenuItem(title: "Zoom In", action: #selector(BrowserWindowController.zoomIn(_:)), keyEquivalent: "+"))
         viewMenu.addItem(NSMenuItem(title: "Zoom Out", action: #selector(BrowserWindowController.zoomOut(_:)), keyEquivalent: "-"))
         viewMenu.addItem(NSMenuItem(title: "Actual Size", action: #selector(BrowserWindowController.resetZoom(_:)), keyEquivalent: "0"))

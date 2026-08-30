@@ -1,8 +1,9 @@
 import AppKit
+import SwiftUI
 import WebKit
 
-/// Manages a single browser window: navigation chrome, web content display.
-/// Tab state lives in the shared TabManager; this controller is the UI over it.
+/// Manages a single browser window: sidebar, navigation chrome, web content.
+/// Tab state lives in the shared TabManager; this controller is the UI layer over it.
 @MainActor
 final class BrowserWindowController: NSWindowController {
 
@@ -15,7 +16,8 @@ final class BrowserWindowController: NSWindowController {
 
     // MARK: - UI Components
 
-    private let addressBar = AddressBar()
+    // Internal so BrowserWindowController+Actions extension can call addressBar.focus()
+    let addressBar = AddressBar()
     private let backButton = NSButton()
     private let forwardButton = NSButton()
     private let reloadButton = NSButton()
@@ -23,7 +25,16 @@ final class BrowserWindowController: NSWindowController {
     private let webContentView = NSView()
     private let toolbarContainer = NSView()
 
-    // KVO for progress
+    // MARK: - Sidebar
+
+    private var sidebarHostingController: NSHostingController<TabSidebarView>?
+    private let sidebarContainerView = NSView()
+    private var isSidebarVisible = true
+    /// Stored so we can zero/restore it on toggle.
+    private var sidebarWidthConstraint: NSLayoutConstraint?
+
+    // MARK: - KVO
+
     private var progressObservation: NSKeyValueObservation?
 
     // MARK: - Init
@@ -45,10 +56,12 @@ final class BrowserWindowController: NSWindowController {
 
         super.init(window: window)
         setupLayout()
+        setupSidebar()
 
         // Sync display whenever TabManager selection changes (from UI or automation)
         tabManager.onSelectionChanged = { [weak self] in
             self?.syncDisplayedTab()
+            self?.updateSidebar()
         }
 
         // Create first tab
@@ -65,24 +78,42 @@ final class BrowserWindowController: NSWindowController {
         guard let contentView = window?.contentView else { return }
         contentView.wantsLayer = true
 
+        // Toolbar
         toolbarContainer.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(toolbarContainer)
-
         setupNavigationButtons()
         setupAddressBar()
         setupProgressBar()
 
+        // Sidebar container — sits to the LEFT of web content
+        sidebarContainerView.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(sidebarContainerView)
+
+        // Web content area — fills everything to the right of the sidebar
         webContentView.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(webContentView)
 
+        let widthConstraint = sidebarContainerView.widthAnchor.constraint(
+            equalToConstant: ControlSize.sidebarWidth
+        )
+        sidebarWidthConstraint = widthConstraint
+
         NSLayoutConstraint.activate([
+            // Toolbar spans full width at the top
             toolbarContainer.topAnchor.constraint(equalTo: contentView.topAnchor),
             toolbarContainer.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
             toolbarContainer.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
             toolbarContainer.heightAnchor.constraint(equalToConstant: 42),
 
+            // Sidebar: left edge → full height below toolbar
+            sidebarContainerView.topAnchor.constraint(equalTo: toolbarContainer.bottomAnchor),
+            sidebarContainerView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            sidebarContainerView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
+            widthConstraint,
+
+            // Web content: fills remainder to the right of sidebar
             webContentView.topAnchor.constraint(equalTo: toolbarContainer.bottomAnchor),
-            webContentView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            webContentView.leadingAnchor.constraint(equalTo: sidebarContainerView.trailingAnchor),
             webContentView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
             webContentView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
         ])
@@ -130,8 +161,13 @@ final class BrowserWindowController: NSWindowController {
 
     private func setupAddressBar() {
         addressBar.translatesAutoresizingMaskIntoConstraints = false
-        addressBar.onNavigate = { [weak self] input in
-            self?.navigate(to: input)
+        addressBar.onNavigate = { [weak self] action in
+            switch action {
+            case .navigate(let url):
+                self?.tabManager.activeTab?.load(url)
+            case .search(let query):
+                self?.tabManager.activeTab?.loadSearch(query)
+            }
         }
         toolbarContainer.addSubview(addressBar)
 
@@ -158,6 +194,78 @@ final class BrowserWindowController: NSWindowController {
             progressBar.bottomAnchor.constraint(equalTo: toolbarContainer.bottomAnchor),
             progressBar.heightAnchor.constraint(equalToConstant: 2),
         ])
+    }
+
+    // MARK: - Sidebar
+
+    /// Creates the NSHostingController<TabSidebarView> and embeds it in sidebarContainerView.
+    /// Called once from init after setupLayout().
+    private func setupSidebar() {
+        let view = makeSidebarView()
+        let hc = NSHostingController(rootView: view)
+        sidebarHostingController = hc
+
+        let hostView = hc.view
+        hostView.translatesAutoresizingMaskIntoConstraints = false
+        sidebarContainerView.addSubview(hostView)
+
+        NSLayoutConstraint.activate([
+            hostView.topAnchor.constraint(equalTo: sidebarContainerView.topAnchor),
+            hostView.bottomAnchor.constraint(equalTo: sidebarContainerView.bottomAnchor),
+            hostView.leadingAnchor.constraint(equalTo: sidebarContainerView.leadingAnchor),
+            hostView.trailingAnchor.constraint(equalTo: sidebarContainerView.trailingAnchor),
+        ])
+    }
+
+    /// Rebuilds the sidebar rootView with fresh tabs/selection data.
+    /// Call whenever the tabs array or selection changes (individual tab properties
+    /// — title, url, isLoading — are tracked automatically by @Observable).
+    func updateSidebar() {
+        sidebarHostingController?.rootView = makeSidebarView()
+    }
+
+    private func makeSidebarView() -> TabSidebarView {
+        TabSidebarView(
+            tabs: tabManager.tabs,
+            selectedTabID: tabManager.activeTab?.id,
+            onSelect: { [weak self] tab in
+                self?.tabManager.select(tab: tab)
+                self?.syncDisplayedTab()
+            },
+            onClose: { [weak self] tab in
+                guard let self else { return }
+                self.tabManager.closeTab(tab)
+                if self.tabManager.tabs.isEmpty {
+                    let newTab = self.tabManager.createTab()
+                    self.tabManager.select(tab: newTab)
+                }
+                self.syncDisplayedTab()
+                self.updateSidebar()
+            },
+            onNewTab: { [weak self] in
+                guard let self else { return }
+                let tab = self.tabManager.createTab()
+                self.tabManager.select(tab: tab)
+                self.syncDisplayedTab()
+                self.updateSidebar()
+                self.addressBar.focus()
+            }
+        )
+    }
+
+    // MARK: - Sidebar Toggle
+
+    @objc func toggleSidebar(_ sender: Any?) {
+        isSidebarVisible.toggle()
+        let targetWidth: CGFloat = isSidebarVisible ? ControlSize.sidebarWidth : 0
+
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = Motion.standard
+            ctx.allowsImplicitAnimation = true
+            sidebarWidthConstraint?.constant = targetWidth
+            sidebarContainerView.isHidden = !isSidebarVisible
+            window?.contentView?.layoutSubtreeIfNeeded()
+        }
     }
 
     // MARK: - Tab Display Sync
@@ -191,132 +299,6 @@ final class BrowserWindowController: NSWindowController {
         observeProgress(for: activeTab)
     }
 
-    // MARK: - Tab Actions (Menu/Keyboard targets)
-
-    @objc func newTab(_ sender: Any?) {
-        let tab = tabManager.createTab()
-        tabManager.select(tab: tab)
-        syncDisplayedTab()
-
-        if sender != nil {
-            addressBar.focus()
-        }
-    }
-
-    @objc func closeCurrentTab(_ sender: Any?) {
-        tabManager.closeCurrentTab()
-
-        if tabManager.tabs.isEmpty {
-            let tab = tabManager.createTab()
-            tabManager.select(tab: tab)
-        }
-
-        syncDisplayedTab()
-    }
-
-    @objc func reopenClosedTab(_ sender: Any?) {
-        if let tab = tabManager.reopenClosedTab() {
-            tabManager.select(tab: tab)
-            syncDisplayedTab()
-        }
-    }
-
-    @objc func switchToTabByNumber(_ sender: NSMenuItem) {
-        let index = sender.tag - 1
-        if index == 8 {
-            tabManager.selectTab(at: tabManager.tabs.count - 1)
-        } else {
-            tabManager.selectTab(at: index)
-        }
-        syncDisplayedTab()
-    }
-
-    @objc func selectNextTab(_ sender: Any?) {
-        tabManager.selectNextTab()
-        syncDisplayedTab()
-    }
-
-    @objc func selectPreviousTab(_ sender: Any?) {
-        tabManager.selectPreviousTab()
-        syncDisplayedTab()
-    }
-
-    // MARK: - Navigation
-
-    private func navigate(to input: String) {
-        guard let tab = tabManager.activeTab else { return }
-        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-
-        if let url = URL(string: trimmed), url.scheme != nil, url.host != nil {
-            tab.load(url)
-        } else if trimmed.contains(".") && !trimmed.contains(" ") {
-            if let url = URL(string: "https://\(trimmed)") {
-                tab.load(url)
-            }
-        } else {
-            tab.loadSearch(trimmed)
-        }
-    }
-
-    @objc func goBack(_ sender: Any?) {
-        tabManager.activeTab?.goBack()
-    }
-
-    @objc func goForward(_ sender: Any?) {
-        tabManager.activeTab?.goForward()
-    }
-
-    @objc func reloadPage(_ sender: Any?) {
-        tabManager.activeTab?.reload()
-    }
-
-    @objc func hardReloadPage(_ sender: Any?) {
-        tabManager.activeTab?.reloadFromOrigin()
-    }
-
-    @objc func focusAddressBar(_ sender: Any?) {
-        addressBar.focus()
-    }
-
-    // MARK: - Find
-
-    @objc func performFind(_ sender: Any?) {
-        guard let tab = tabManager.activeTab else { return }
-
-        let alert = NSAlert()
-        alert.messageText = "Find in Page"
-        alert.addButton(withTitle: "Find")
-        alert.addButton(withTitle: "Cancel")
-
-        let textField = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
-        alert.accessoryView = textField
-
-        let response = alert.runModal()
-        if response == .alertFirstButtonReturn {
-            let query = textField.stringValue
-            if !query.isEmpty {
-                tab.webView.evaluateJavaScript("window.find('\(query.replacingOccurrences(of: "'", with: "\\'"))')", completionHandler: nil)
-            }
-        }
-    }
-
-    // MARK: - Zoom
-
-    @objc func zoomIn(_ sender: Any?) {
-        guard let tab = tabManager.activeTab else { return }
-        tab.setZoom(min(tab.zoomLevel + 0.1, 3.0))
-    }
-
-    @objc func zoomOut(_ sender: Any?) {
-        guard let tab = tabManager.activeTab else { return }
-        tab.setZoom(max(tab.zoomLevel - 0.1, 0.3))
-    }
-
-    @objc func resetZoom(_ sender: Any?) {
-        tabManager.activeTab?.setZoom(1.0)
-    }
-
     // MARK: - UI Updates
 
     private func updateUI() {
@@ -328,7 +310,8 @@ final class BrowserWindowController: NSWindowController {
 
         let tabCount = tabManager.tabs.count
         if tabCount > 1 {
-            window?.title = "[\((tabManager.selectedTabIndex) + 1)/\(tabCount)] " + (tab.title.isEmpty ? "Agent Browser" : tab.title)
+            window?.title = "[\((tabManager.selectedTabIndex) + 1)/\(tabCount)] "
+                + (tab.title.isEmpty ? "Agent Browser" : tab.title)
         }
     }
 

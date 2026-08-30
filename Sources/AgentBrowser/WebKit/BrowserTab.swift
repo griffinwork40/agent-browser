@@ -4,8 +4,14 @@ import Observation
 
 @Observable @MainActor
 final class BrowserTab: Identifiable {
-    let id = UUID()
-    let createdAt = Date()
+    // Identity and provenance — owned by the record
+    let record: TabRecord
+
+    /// Stable identity forwarded from the record.
+    var id: UUID { record.id }
+
+    /// Creation timestamp forwarded from the record.
+    var createdAt: Date { record.createdAt }
 
     // Display state
     private(set) var url: URL?
@@ -32,7 +38,22 @@ final class BrowserTab: Identifiable {
     // Callback for when a popup/new-tab navigation is requested
     var onNewTabRequested: ((URL) -> Void)?
 
-    init(configuration: WKWebViewConfiguration? = nil) {
+    /// A point-in-time snapshot of this tab's current navigation state.
+    var navState: NavigationState {
+        NavigationState(
+            url: url,
+            title: title,
+            isLoading: isLoading,
+            loadProgress: loadProgress,
+            canGoBack: canGoBack,
+            canGoForward: canGoForward,
+            isSecure: isSecure,
+            zoomLevel: zoomLevel
+        )
+    }
+
+    init(record: TabRecord = TabRecord(), configuration: WKWebViewConfiguration? = nil) {
+        self.record = record
         let config = configuration ?? Self.makeDefaultConfiguration()
         let wv = WKWebView(frame: .zero, configuration: config)
         wv.allowsBackForwardNavigationGestures = true

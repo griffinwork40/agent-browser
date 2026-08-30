@@ -33,8 +33,9 @@ final class TabManager {
 
     /// Create a new empty tab. Returns it.
     @discardableResult
-    func createTab(url: URL? = nil) -> BrowserTab {
-        let tab = BrowserTab()
+    func createTab(url: URL? = nil, provenance: TabProvenance = .human) -> BrowserTab {
+        let record = TabRecord(provenance: provenance)
+        let tab = BrowserTab(record: record)
         tabs.append(tab)
 
         // Wire popup callback
@@ -75,7 +76,8 @@ final class TabManager {
     @discardableResult
     func reopenClosedTab() -> BrowserTab? {
         guard let closed = closedTabStack.popLast(), let url = closed.url else { return nil }
-        let tab = BrowserTab()
+        let record = TabRecord(provenance: .restored(originalAgentID: nil, originalSessionTag: nil))
+        let tab = BrowserTab(record: record)
         let insertIndex = min(closed.index, tabs.count)
         tabs.insert(tab, at: insertIndex)
 
