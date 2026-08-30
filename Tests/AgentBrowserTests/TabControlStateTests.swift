@@ -72,6 +72,7 @@ struct TabControlStateTests {
         state.agentFailed()
         #expect(state.state == .error)
         #expect(state.activeAgentID == nil)
+        #expect(state.interruptTrigger == nil)
     }
 
     @Test("humanEnds from error resets to idle")
