@@ -25,6 +25,7 @@ final class TabControlState: Identifiable {
     private(set) var activeAgentID: String?
     private(set) var lastTransitionAt: Date = Date()
     private(set) var interruptTrigger: InterruptTrigger?
+    private(set) var authReason: String?
 
     init(tabID: UUID) {
         self.tabID = tabID
@@ -73,14 +74,17 @@ final class TabControlState: Identifiable {
 
     /// Agent detected an auth wall -- hand off to human for authentication.
     /// The agent remains associated but paused until the human completes auth.
+    /// Only valid from .agentActive -- a live agent must exist to await auth.
     func awaitAuth(reason: String? = nil) {
-        guard state == .agentActive || state == .idle else { return }
+        guard state == .agentActive else { return }
+        authReason = reason
         transition(to: .awaitingAuth)
     }
 
     /// Human explicitly resumes agent (from humanOwns or awaitingAuth)
     func humanResumes() {
         guard state == .humanOwns || state == .awaitingAuth else { return }
+        authReason = nil
         transition(to: .agentActive)
     }
 
@@ -88,6 +92,7 @@ final class TabControlState: Identifiable {
     func humanEnds() {
         activeAgentID = nil
         interruptTrigger = nil
+        authReason = nil
         transition(to: .idle)
     }
 

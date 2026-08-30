@@ -92,9 +92,12 @@ extension BrowserAutomationService {
         if let err = dict["error"] as? String {
             return .failure(code: mapJSErrorCode(err), message: err)
         }
+        // Never surface previousValue for keychain fills -- it would leak prior field
+        // contents (potentially a credential) to callers over the HTTP transport.
+        let detail = action == "fillFromKeychain" ? nil : dict["previousValue"] as? String
         return .success(ActionResult(
             ok: true, id: tabID, elementId: elementId, action: action,
-            error: nil, detail: dict["previousValue"] as? String
+            error: nil, detail: detail
         ))
     }
 

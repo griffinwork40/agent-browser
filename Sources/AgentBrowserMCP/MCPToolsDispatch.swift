@@ -113,7 +113,7 @@ extension MCPTools {
         let type = params["type"] as? String ?? "password"
 
         if let err = dict["error"] as? String {
-            return textContent("Failed to fill \(type) for \(domain): \(err)")
+            return toolError("Failed to fill \(type) for \(domain): \(err)")
         }
 
         var msg = "Filled \(type) field"

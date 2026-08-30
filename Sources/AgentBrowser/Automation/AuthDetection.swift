@@ -5,8 +5,9 @@ import WebKit
 //
 // Option D: Passkey Human-Handoff Protocol.
 // Detects when a page requires authentication (login forms, WebAuthn ceremonies,
-// MFA prompts, CAPTCHAs) and transitions the tab to awaitingAuth state so the
-// human can complete the auth flow in the live WKWebView.
+// MFA prompts, CAPTCHAs) and returns a detection result so the calling agent
+// can request human handoff. The tab state transition to awaitingAuth is
+// initiated by the agent, not by this module.
 //
 // Also provides a JS injection for detecting WebAuthn ceremony initiation
 // (navigator.credentials.create/get) so the agent can proactively hand off
@@ -101,7 +102,8 @@ extension BrowserAutomationService {
             '/challenge', '/security-check'
         ];
         for (const p of authPaths) {
-            if (path.includes(p)) {
+            const idx = path.indexOf(p);
+            if (idx !== -1 && (idx + p.length === path.length || path[idx + p.length] === '/')) {
                 signals.push({ type: 'url_pattern', detail: p });
                 break;
             }
@@ -215,7 +217,7 @@ extension BrowserAutomationService {
 
         return {
             status: status,
-            url: window.location.href,
+            url: window.location.origin + window.location.pathname,
             title: document.title,
             signals: signals
         };

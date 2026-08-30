@@ -453,14 +453,14 @@
       nativeSetter.set.call(el, value);
       fireEvent(el, 'focus');
       el.select();
-      el.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, inputType: 'insertReplacementText', data: value }));
+      el.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, inputType: 'insertReplacementText', data: null }));
       fireEvent(el, 'change');
     } else if (tag === 'TEXTAREA') {
       const nativeSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value');
       nativeSetter.set.call(el, value);
       fireEvent(el, 'focus');
       el.select();
-      el.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, inputType: 'insertReplacementText', data: value }));
+      el.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, inputType: 'insertReplacementText', data: null }));
       fireEvent(el, 'change');
     } else if (el.isContentEditable) {
       el.textContent = value;

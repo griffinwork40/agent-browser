@@ -11,15 +11,18 @@ import LocalAuthentication
 // appears in any HTTP response, MCP payload, or model context window.
 //
 // The OS displays a native permission dialog before returning the credential
-// (kSecUseAuthenticationUI = .allow), so the user explicitly approves each use.
+// (kSecUseAuthenticationContext = LAContext with interactionNotAllowed = false),
+// so the OS displays a native Touch ID / password dialog before returning the credential.
 
 extension BrowserAutomationService {
 
     // MARK: - Public API
 
     /// Fill a form field with a credential from the macOS Keychain.
-    /// The credential is looked up, injected into the DOM, and immediately
-    /// zeroed from Swift memory. It never appears in the response payload.
+    /// The credential is looked up and injected directly into the DOM via the
+    /// JS bridge. It is never included in any response payload or model context.
+    /// Note: Swift `String` provides no deterministic secure-erase guarantee;
+    /// the credential value resides in process memory until ARC reclaims it.
     func fillFromKeychainCallback(
         tabId: String,
         elementId: String,
@@ -132,6 +135,14 @@ extension BrowserAutomationService {
     /// Look up a credential from the macOS Keychain.
     /// Returns the credential string or nil + error message.
     /// The OS will display a native permission dialog before returning.
+    ///
+    /// - Parameters:
+    ///   - domain: The server/domain to scope the keychain query.
+    ///   - account: Optional account name to pin the query to a specific entry.
+    ///     For `.username` lookups where `account` is nil and multiple entries exist
+    ///     for the domain, pass `account` from a prior `keychainAccounts` call;
+    ///     omitting it returns one entry non-deterministically (OS-defined order).
+    ///   - type: Whether to retrieve the password data or the account name.
     private func keychainLookup(
         domain: String,
         account: String?,
@@ -141,25 +152,36 @@ extension BrowserAutomationService {
         let context = LAContext()
         context.interactionNotAllowed = false
 
-        var query: [String: Any] = [
+        // Base attributes shared by both paths.
+        var base: [String: Any] = [
             kSecClass as String: kSecClassInternetPassword,
             kSecAttrServer as String: domain,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne,
             kSecUseAuthenticationContext as String: context,
         ]
-
         if let account {
-            query[kSecAttrAccount as String] = account
+            base[kSecAttrAccount as String] = account
         }
 
+        // Build a type-specific query rather than mutating a shared dict.
+        let query: [String: Any]
         switch type {
         case .password:
-            break // kSecClassInternetPassword is already set
+            // Return raw password bytes; decode as UTF-8 below.
+            query = base.merging([
+                kSecReturnData as String: true,
+                kSecMatchLimit as String: kSecMatchLimitOne,
+            ]) { _, new in new }
+
         case .username:
-            // For username lookup, we want the account attribute, not the password
-            query[kSecReturnData as String] = false
-            query[kSecReturnAttributes as String] = true
+            // Return attributes (kSecAttrAccount) only -- never request password data.
+            // kSecMatchLimitOne is intentional: when account==nil and multiple entries
+            // exist for the domain the OS picks one non-deterministically. Callers that
+            // need a specific account should pass one (sourced from keychainAccounts).
+            query = base.merging([
+                kSecReturnData as String: false,
+                kSecReturnAttributes as String: true,
+                kSecMatchLimit as String: kSecMatchLimitOne,
+            ]) { _, new in new }
         }
 
         var result: AnyObject?
