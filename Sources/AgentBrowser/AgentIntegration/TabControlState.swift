@@ -6,6 +6,7 @@ enum ControlState: String, Sendable, Codable {
     case agentActive   // agent performing action
     case interrupting  // human touched, agent completing atomic action
     case humanOwns     // human took over, agent paused
+    case awaitingAuth  // agent detected auth wall, waiting for human to authenticate
     case error         // agent action failed
 }
 
@@ -70,9 +71,16 @@ final class TabControlState: Identifiable {
         transition(to: .interrupting)
     }
 
-    /// Human explicitly resumes agent
+    /// Agent detected an auth wall -- hand off to human for authentication.
+    /// The agent remains associated but paused until the human completes auth.
+    func awaitAuth(reason: String? = nil) {
+        guard state == .agentActive || state == .idle else { return }
+        transition(to: .awaitingAuth)
+    }
+
+    /// Human explicitly resumes agent (from humanOwns or awaitingAuth)
     func humanResumes() {
-        guard state == .humanOwns else { return }
+        guard state == .humanOwns || state == .awaitingAuth else { return }
         transition(to: .agentActive)
     }
 

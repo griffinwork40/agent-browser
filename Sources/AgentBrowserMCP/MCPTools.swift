@@ -95,6 +95,27 @@ struct MCPTools {
                  desc: "Capture a screenshot of a tab as PNG. Returns the image directly.",
                  props: ["tab_id": prop("string", "Tab ID from browser_tabs")],
                  required: ["tab_id"]),
+
+            tool("browser_auth_status",
+                 desc: "Detect whether a page requires authentication. Returns a status: 'authenticated', 'login_required', 'session_expired', 'mfa_required', 'captcha_blocked', or 'paywall'. Use before attempting to interact with a page that may need login. Returns detection signals (URL patterns, password fields, login forms, CAPTCHA, MFA inputs) so the agent can decide how to proceed.",
+                 props: ["tab_id": prop("string", "Tab ID from browser_tabs")],
+                 required: ["tab_id"]),
+
+            tool("browser_auth_accounts",
+                 desc: "List available Keychain accounts for a domain. Returns account names (usernames/emails) stored in the macOS Keychain for the given domain. No passwords are returned. Use to discover which credentials are available before calling browser_fill_from_keychain.",
+                 props: ["domain": prop("string", "Domain to look up (e.g. 'github.com', 'google.com')")],
+                 required: ["domain"]),
+
+            tool("browser_fill_from_keychain",
+                 desc: "Fill a form field with a credential from the macOS Keychain. The credential is retrieved securely and injected directly into the DOM -- it NEVER appears in this response. The OS will show a native permission dialog asking the user to approve access. Use type='password' (default) to fill a password field, or type='username' to fill a username/email field.",
+                 props: [
+                    "tab_id": prop("string", "Tab ID from browser_tabs"),
+                    "element_id": prop("string", "Element handle from browser_inspect (the input field to fill)"),
+                    "domain": prop("string", "Domain to look up credentials for (e.g. 'github.com')"),
+                    "type": prop("string", "Credential type: 'password' (default) or 'username'"),
+                    "account": prop("string", "Optional: specific account/username to look up. If omitted, returns the first matching credential for the domain.")
+                 ],
+                 required: ["tab_id", "element_id", "domain"]),
         ]
     }
 
@@ -161,6 +182,26 @@ struct MCPTools {
         case "browser_screenshot":
             guard let tabId = args["tab_id"] as? String else { return toolError("Missing required argument: tab_id") }
             return callBrowserScreenshot(params: ["id": tabId])
+
+        case "browser_auth_status":
+            guard let tabId = args["tab_id"] as? String else { return toolError("Missing required argument: tab_id") }
+            return callBrowser(method: "auth.status", params: ["id": tabId])
+
+        case "browser_auth_accounts":
+            guard let domain = args["domain"] as? String else { return toolError("Missing required argument: domain") }
+            return callBrowser(method: "auth.accounts", params: ["domain": domain])
+
+        case "browser_fill_from_keychain":
+            guard let tabId = args["tab_id"] as? String,
+                  let elId = args["element_id"] as? String,
+                  let domain = args["domain"] as? String else {
+                return toolError("Missing required arguments: tab_id, element_id, domain")
+            }
+            var params: [String: Any] = ["id": tabId, "elementId": elId, "domain": domain]
+            if let type = args["type"] as? String { params["type"] = type }
+            if let account = args["account"] as? String { params["account"] = account }
+            return callBrowserFillFromKeychain(params: params)
+
         default:
             return toolError("Unknown tool: \(name)")
         }

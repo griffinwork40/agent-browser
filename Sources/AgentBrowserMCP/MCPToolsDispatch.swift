@@ -99,6 +99,30 @@ extension MCPTools {
         return (content, false)
     }
 
+    /// Fill from Keychain: the response must NEVER contain the credential.
+    /// The browser host does the Keychain lookup + DOM fill atomically.
+    /// We only report success/failure to the MCP client.
+    func callBrowserFillFromKeychain(params: [String: Any]) -> ([[String: Any]], Bool) {
+        let (result, error) = BrowserClient.call(method: "auth.fillFromKeychain", params: params)
+        if let error { return toolError(error) }
+        guard let dict = result as? [String: Any] else { return toolError("Unexpected response") }
+
+        // Strip any credential data that might leak through -- only pass safe fields
+        let elementId = dict["elementId"] as? String
+        let domain = params["domain"] as? String ?? ""
+        let type = params["type"] as? String ?? "password"
+
+        if let err = dict["error"] as? String {
+            return textContent("Failed to fill \(type) for \(domain): \(err)")
+        }
+
+        var msg = "Filled \(type) field"
+        if let elementId { msg += " (\(elementId))" }
+        msg += " from Keychain for \(domain)"
+        msg += " -- credential was injected directly into the page (not shown here)"
+        return textContent(msg)
+    }
+
     // MARK: - Internal Helpers
 
     private func toolError(_ message: String) -> ([[String: Any]], Bool) {
