@@ -63,6 +63,29 @@ struct TabControlStateTests {
         #expect(state.state == .error)
     }
 
+    @Test("interrupting -> error via agentFailed")
+    @MainActor func interruptingToError() {
+        let state = TabControlState(tabID: UUID())
+        state.agentBegins(agentID: "agent-1")
+        state.humanInterrupts(trigger: .click)
+        #expect(state.state == .interrupting)
+        state.agentFailed()
+        #expect(state.state == .error)
+        #expect(state.activeAgentID == nil)
+    }
+
+    @Test("humanEnds from error resets to idle")
+    @MainActor func humanEndsFromError() {
+        let state = TabControlState(tabID: UUID())
+        state.agentBegins(agentID: "agent-1")
+        state.agentFailed()
+        #expect(state.state == .error)
+        state.humanEnds()
+        #expect(state.state == .idle)
+        #expect(state.activeAgentID == nil)
+        #expect(state.interruptTrigger == nil)
+    }
+
     @Test("error -> idle via acknowledgeError")
     @MainActor func errorToIdle() {
         let state = TabControlState(tabID: UUID())

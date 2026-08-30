@@ -94,6 +94,12 @@ final class TabManager {
         closeTab(tab)
     }
 
+    /// Clear the closed-tab history stack. Call after a profile switch so
+    /// Cmd+Shift+T cannot reopen tabs that belonged to a different profile.
+    func clearClosedTabStack() {
+        closedTabStack.removeAll()
+    }
+
     /// Reopen the most recently closed tab. Returns it, or nil.
     /// Blank tabs (no URL) are restored as new empty tabs rather than discarded.
     @discardableResult

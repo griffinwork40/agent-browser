@@ -205,6 +205,9 @@ final class BrowserWindowController: NSWindowController {
                 for tab in existing {
                     self.tabManager.closeTab(tab)
                 }
+                // Purge the closed-tab history so Cmd+Shift+T cannot reopen
+                // tabs from the previous profile after a switch.
+                self.tabManager.clearClosedTabStack()
                 self.syncDisplayedTab()
                 self.updateSidebar()
             },

@@ -121,8 +121,7 @@ final class AgentHTTPServer {
         // Host validation — reject requests that are missing the Host header or
         // whose Host doesn't match the loopback allowlist (prevents DNS rebinding).
         let allowedHosts: Set<String> = [
-            "127.0.0.1:\(boundPort)", "localhost:\(boundPort)",
-            "127.0.0.1", "localhost"
+            "127.0.0.1:\(boundPort)", "localhost:\(boundPort)"
         ]
         guard let host = headers["host"]?.lowercased(), allowedHosts.contains(host) else {
             respond(conn, AgentResponse.failure(code: "FORBIDDEN", message: "Invalid Host")); return

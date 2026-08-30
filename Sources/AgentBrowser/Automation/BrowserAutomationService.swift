@@ -737,18 +737,26 @@ final class BrowserAutomationService {
     /// Includes a 10-second timeout to prevent indefinite hangs when the WKWebView is in a
     /// state that prevents callback delivery (zero frame, not in hierarchy, process suspended).
     private func evaluateJS(on webView: WKWebView, script: String) async throws -> Any? {
+#if DEBUG
         print("[evaluateJS] Starting eval, frame=\(webView.frame), superview=\(webView.superview != nil)")
+#endif
         return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Any?, Error>) in
+#if DEBUG
             print("[evaluateJS] About to call evaluateJavaScript")
+#endif
             webView.evaluateJavaScript(script) { result, error in
+#if DEBUG
                 print("[evaluateJS] Callback received: result=\(String(describing: result)), error=\(String(describing: error))")
+#endif
                 if let error {
                     cont.resume(throwing: error)
                 } else {
                     cont.resume(returning: result)
                 }
             }
+#if DEBUG
             print("[evaluateJS] evaluateJavaScript called, waiting for callback")
+#endif
         }
     }
 }
