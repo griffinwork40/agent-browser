@@ -10,6 +10,9 @@ struct TabRecord: Identifiable, Sendable, Codable, Hashable {
     var groupID: UUID?
     var isPinned: Bool
     var isPrivate: Bool
+    /// The profile this tab belongs to. Defaults to a placeholder UUID;
+    /// TabManager always overwrites this with the active profile's ID at creation.
+    var profileID: UUID
 
     init(
         id: UUID = UUID(),
@@ -18,7 +21,8 @@ struct TabRecord: Identifiable, Sendable, Codable, Hashable {
         lifecycleState: TabLifecycle = .empty,
         groupID: UUID? = nil,
         isPinned: Bool = false,
-        isPrivate: Bool = false
+        isPrivate: Bool = false,
+        profileID: UUID = UUID()
     ) {
         self.id = id
         self.createdAt = createdAt
@@ -27,5 +31,6 @@ struct TabRecord: Identifiable, Sendable, Codable, Hashable {
         self.groupID = groupID
         self.isPinned = isPinned
         self.isPrivate = isPrivate
+        self.profileID = profileID
     }
 }

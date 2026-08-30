@@ -10,6 +10,7 @@ final class BrowserWindowController: NSWindowController {
     // MARK: - Shared State
 
     let tabManager: TabManager
+    let profileManager: ProfileManager
 
     /// Track which tab is currently displayed in the view hierarchy.
     private var displayedTabID: UUID?
@@ -39,8 +40,9 @@ final class BrowserWindowController: NSWindowController {
 
     // MARK: - Init
 
-    init(tabManager: TabManager) {
+    init(tabManager: TabManager, profileManager: ProfileManager) {
         self.tabManager = tabManager
+        self.profileManager = profileManager
 
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800),
@@ -225,9 +227,14 @@ final class BrowserWindowController: NSWindowController {
     }
 
     private func makeSidebarView() -> TabSidebarView {
-        TabSidebarView(
+        // Build profileID → colorName map from the live profiles list
+        let profileColors: [UUID: String] = Dictionary(
+            uniqueKeysWithValues: profileManager.profiles.map { ($0.id, $0.colorName) }
+        )
+        return TabSidebarView(
             tabs: tabManager.tabs,
             selectedTabID: tabManager.activeTab?.id,
+            profileColors: profileColors,
             onSelect: { [weak self] tab in
                 self?.tabManager.select(tab: tab)
                 self?.syncDisplayedTab()
@@ -249,6 +256,19 @@ final class BrowserWindowController: NSWindowController {
                 self.syncDisplayedTab()
                 self.updateSidebar()
                 self.addressBar.focus()
+            },
+            profiles: profileManager.profiles,
+            activeProfileID: profileManager.activeProfileID,
+            onSwitchProfile: { [weak self] id in
+                guard let self else { return }
+                self.profileManager.switchTo(profileID: id)
+                // TODO: recreate tabs with new profile's data store in future
+                self.updateSidebar()
+            },
+            onCreateProfile: { [weak self] in
+                guard let self else { return }
+                self.profileManager.createProfile(name: "New Profile")
+                self.updateSidebar()
             }
         )
     }

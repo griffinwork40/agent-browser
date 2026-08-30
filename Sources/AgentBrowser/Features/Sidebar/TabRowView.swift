@@ -8,6 +8,7 @@ struct TabRowView: View {
 
     let tab: BrowserTab        // @Observable — SwiftUI auto-tracks title/url/isLoading
     let isSelected: Bool
+    let profileColorName: String?
     let onSelect: () -> Void
     let onClose: () -> Void
 
@@ -67,8 +68,16 @@ struct TabRowView: View {
 
     /// Colored circle with the first letter of the domain.
     /// Shows a spinner while loading; will be replaced with real favicon loading later.
+    /// When `profileColorName` is set, a 1.5pt colored ring is drawn around the circle.
     private var faviconView: some View {
         ZStack {
+            // Profile color ring — only shown when the tab belongs to a named profile
+            if let colorName = profileColorName {
+                Circle()
+                    .stroke(resolvedProfileColor(colorName), lineWidth: 1.5)
+                    .frame(width: 20, height: 20)
+            }
+
             Circle()
                 .fill(isSelected ? Color.accentColor : Color.secondary.opacity(0.3))
                 .frame(width: 16, height: 16)
@@ -84,7 +93,27 @@ struct TabRowView: View {
                     .foregroundStyle(isSelected ? .white : .primary)
             }
         }
-        .frame(width: 16, height: 16)
+        .frame(width: 20, height: 20)
+    }
+
+    // MARK: - Profile color helper
+
+    /// Maps a profile colorName string (from ProfileRecord) to a SwiftUI Color.
+    /// Mirrors the palette defined in ProfileRecord.defaultColors.
+    private func resolvedProfileColor(_ name: String) -> Color {
+        switch name {
+        case "blue":   return .blue
+        case "indigo": return .indigo
+        case "purple": return .purple
+        case "pink":   return .pink
+        case "red":    return .red
+        case "orange": return .orange
+        case "yellow": return .yellow
+        case "green":  return .green
+        case "teal":   return .teal
+        case "cyan":   return .cyan
+        default:       return .gray
+        }
     }
 
     // MARK: - Background

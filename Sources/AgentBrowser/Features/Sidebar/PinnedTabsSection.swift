@@ -18,6 +18,7 @@ struct PinnedTabsSection: View {
                     TabRowView(
                         tab: tab,
                         isSelected: tab.id == selectedTabID,
+                        profileColorName: nil,
                         onSelect: { onSelect(tab) },
                         onClose: {}   // pinned tabs cannot be closed from sidebar
                     )

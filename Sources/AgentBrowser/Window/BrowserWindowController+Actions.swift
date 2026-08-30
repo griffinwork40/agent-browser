@@ -106,6 +106,31 @@ extension BrowserWindowController {
         }
     }
 
+    // MARK: - Profile Switching
+
+    @objc func switchToNextProfile(_ sender: Any?) {
+        let profiles = profileManager.profiles
+        guard profiles.count > 1 else { return }
+        guard let currentIndex = profiles.firstIndex(where: { $0.id == profileManager.activeProfileID }) else { return }
+        let nextIndex = (currentIndex + 1) % profiles.count
+        profileManager.switchTo(profileID: profiles[nextIndex].id)
+        updateSidebar()
+    }
+
+    @objc func switchToPreviousProfile(_ sender: Any?) {
+        let profiles = profileManager.profiles
+        guard profiles.count > 1 else { return }
+        guard let currentIndex = profiles.firstIndex(where: { $0.id == profileManager.activeProfileID }) else { return }
+        let prevIndex = (currentIndex - 1 + profiles.count) % profiles.count
+        profileManager.switchTo(profileID: profiles[prevIndex].id)
+        updateSidebar()
+    }
+
+    @objc func createNewProfile(_ sender: Any?) {
+        profileManager.createProfile(name: "New Profile")
+        updateSidebar()
+    }
+
     // MARK: - Zoom
 
     @objc func zoomIn(_ sender: Any?) {

@@ -18,12 +18,22 @@ struct SessionSnapshot: Codable, Sendable {
         let title: String
         /// Who created this tab originally (human or agent).
         let provenance: TabProvenance
+        /// Which profile this tab belongs to. Defaults to a new UUID for snapshots
+        /// written before multi-profile support; restored tabs will use the active profile.
+        let profileID: UUID
 
-        init(id: UUID, urlString: String?, title: String, provenance: TabProvenance) {
+        init(
+            id: UUID,
+            urlString: String?,
+            title: String,
+            provenance: TabProvenance,
+            profileID: UUID = UUID()
+        ) {
             self.id = id
             self.urlString = urlString
             self.title = title
             self.provenance = provenance
+            self.profileID = profileID
         }
 
         /// Convenience accessor that re-hydrates the URL.
