@@ -1,54 +1,71 @@
 import AppKit
+import SwiftUI
 import WebKit
 
-/// Manages a single browser window: navigation chrome, web content display.
-/// Tab state lives in the shared TabManager; this controller is the UI over it.
+/// Manages a single browser window: sidebar, navigation chrome, web content.
+/// Tab state lives in the shared TabManager; this controller is the UI layer over it.
 @MainActor
 final class BrowserWindowController: NSWindowController {
 
     // MARK: - Shared State
 
     let tabManager: TabManager
+    let profileManager: ProfileManager
 
     /// Track which tab is currently displayed in the view hierarchy.
     private var displayedTabID: UUID?
 
     // MARK: - UI Components
 
-    private let addressBar = AddressBar()
-    private let backButton = NSButton()
-    private let forwardButton = NSButton()
-    private let reloadButton = NSButton()
-    private let progressBar = NSProgressIndicator()
-    private let webContentView = NSView()
-    private let toolbarContainer = NSView()
+    // Internal so extensions (+Actions, +Toolbar) can reach these.
+    let addressBar = AddressBar()
+    let backButton = NSButton()
+    let forwardButton = NSButton()
+    let reloadButton = NSButton()
+    let progressBar = NSProgressIndicator()
+    let webContentView = NSView()
+    let toolbarContainer = NSView()
 
-    // KVO for progress
+    // MARK: - Sidebar
+
+    private var sidebarHostingController: NSHostingController<TabSidebarView>?
+    private let sidebarContainerView = NSView()
+    private var isSidebarVisible = true
+    /// Stored so we can zero/restore it on toggle.
+    private var sidebarWidthConstraint: NSLayoutConstraint?
+
+    // MARK: - KVO
+
     private var progressObservation: NSKeyValueObservation?
 
     // MARK: - Init
 
-    init(tabManager: TabManager) {
+    init(tabManager: TabManager, profileManager: ProfileManager) {
         self.tabManager = tabManager
+        self.profileManager = profileManager
 
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
         window.title = "Agent Browser"
         window.setFrameAutosaveName("BrowserWindow")
         window.minSize = NSSize(width: 400, height: 300)
-        window.titlebarAppearsTransparent = false
+        // Transparent titlebar lets the toolbar's NSVisualEffectView material bleed
+        // to the very top edge of the window, giving the full Liquid Glass effect.
+        window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
 
         super.init(window: window)
         setupLayout()
+        setupSidebar()
 
         // Sync display whenever TabManager selection changes (from UI or automation)
         tabManager.onSelectionChanged = { [weak self] in
             self?.syncDisplayedTab()
+            self?.updateSidebar()
         }
 
         // Create first tab
@@ -65,99 +82,155 @@ final class BrowserWindowController: NSWindowController {
         guard let contentView = window?.contentView else { return }
         contentView.wantsLayer = true
 
+        // Toolbar — glass background via NSVisualEffectView (Option A).
+        // We insert the effect view as the first (bottom-most) subview of the
+        // toolbarContainer so all button/field subviews draw on top of it.
         toolbarContainer.translatesAutoresizingMaskIntoConstraints = false
+        toolbarContainer.wantsLayer = true
         contentView.addSubview(toolbarContainer)
-
+        setupToolbarGlassBackground()
         setupNavigationButtons()
         setupAddressBar()
         setupProgressBar()
 
+        // Sidebar container — sits to the LEFT of web content
+        sidebarContainerView.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(sidebarContainerView)
+
+        // Web content area — fills everything to the right of the sidebar
         webContentView.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(webContentView)
 
+        let widthConstraint = sidebarContainerView.widthAnchor.constraint(
+            equalToConstant: ControlSize.sidebarWidth
+        )
+        sidebarWidthConstraint = widthConstraint
+
         NSLayoutConstraint.activate([
+            // Toolbar spans full width at the top.
+            // With .fullSizeContentView + titlebarAppearsTransparent the toolbar
+            // top is pinned to the window top (behind the titlebar area), so the
+            // glass material fills all the way to the top window edge.
             toolbarContainer.topAnchor.constraint(equalTo: contentView.topAnchor),
             toolbarContainer.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
             toolbarContainer.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
-            toolbarContainer.heightAnchor.constraint(equalToConstant: 42),
+            toolbarContainer.heightAnchor.constraint(equalToConstant: ControlSize.toolbarHeight),
 
+            // Sidebar: left edge → full height below toolbar
+            sidebarContainerView.topAnchor.constraint(equalTo: toolbarContainer.bottomAnchor),
+            sidebarContainerView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            sidebarContainerView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
+            widthConstraint,
+
+            // Web content: fills remainder to the right of sidebar
             webContentView.topAnchor.constraint(equalTo: toolbarContainer.bottomAnchor),
-            webContentView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            webContentView.leadingAnchor.constraint(equalTo: sidebarContainerView.trailingAnchor),
             webContentView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
             webContentView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
         ])
     }
 
-    private func setupNavigationButtons() {
-        backButton.image = NSImage(systemSymbolName: "chevron.left", accessibilityDescription: "Back")
-        backButton.bezelStyle = .accessoryBarAction
-        backButton.isBordered = false
-        backButton.target = self
-        backButton.action = #selector(goBack(_:))
-        backButton.translatesAutoresizingMaskIntoConstraints = false
-        toolbarContainer.addSubview(backButton)
+    // MARK: - Sidebar
 
-        forwardButton.image = NSImage(systemSymbolName: "chevron.right", accessibilityDescription: "Forward")
-        forwardButton.bezelStyle = .accessoryBarAction
-        forwardButton.isBordered = false
-        forwardButton.target = self
-        forwardButton.action = #selector(goForward(_:))
-        forwardButton.translatesAutoresizingMaskIntoConstraints = false
-        toolbarContainer.addSubview(forwardButton)
+    /// Creates the NSHostingController<TabSidebarView> and embeds it in sidebarContainerView.
+    /// Called once from init after setupLayout().
+    private func setupSidebar() {
+        let view = makeSidebarView()
+        let hc = NSHostingController(rootView: view)
+        sidebarHostingController = hc
 
-        reloadButton.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "Reload")
-        reloadButton.bezelStyle = .accessoryBarAction
-        reloadButton.isBordered = false
-        reloadButton.target = self
-        reloadButton.action = #selector(reloadPage(_:))
-        reloadButton.translatesAutoresizingMaskIntoConstraints = false
-        toolbarContainer.addSubview(reloadButton)
+        let hostView = hc.view
+        hostView.translatesAutoresizingMaskIntoConstraints = false
+        sidebarContainerView.addSubview(hostView)
 
         NSLayoutConstraint.activate([
-            backButton.leadingAnchor.constraint(equalTo: toolbarContainer.leadingAnchor, constant: 12),
-            backButton.centerYAnchor.constraint(equalTo: toolbarContainer.centerYAnchor),
-            backButton.widthAnchor.constraint(equalToConstant: 28),
-
-            forwardButton.leadingAnchor.constraint(equalTo: backButton.trailingAnchor, constant: 4),
-            forwardButton.centerYAnchor.constraint(equalTo: toolbarContainer.centerYAnchor),
-            forwardButton.widthAnchor.constraint(equalToConstant: 28),
-
-            reloadButton.leadingAnchor.constraint(equalTo: forwardButton.trailingAnchor, constant: 4),
-            reloadButton.centerYAnchor.constraint(equalTo: toolbarContainer.centerYAnchor),
-            reloadButton.widthAnchor.constraint(equalToConstant: 28),
+            hostView.topAnchor.constraint(equalTo: sidebarContainerView.topAnchor),
+            hostView.bottomAnchor.constraint(equalTo: sidebarContainerView.bottomAnchor),
+            hostView.leadingAnchor.constraint(equalTo: sidebarContainerView.leadingAnchor),
+            hostView.trailingAnchor.constraint(equalTo: sidebarContainerView.trailingAnchor),
         ])
     }
 
-    private func setupAddressBar() {
-        addressBar.translatesAutoresizingMaskIntoConstraints = false
-        addressBar.onNavigate = { [weak self] input in
-            self?.navigate(to: input)
+    /// Rebuilds the sidebar rootView with fresh tabs/selection data.
+    /// Call whenever the tabs array or selection changes (individual tab properties
+    /// — title, url, isLoading — are tracked automatically by @Observable).
+    func updateSidebar() {
+        sidebarHostingController?.rootView = makeSidebarView()
+    }
+
+    /// Switches to the given profile, closing all existing tabs and opening
+    /// a fresh tab bound to the new profile's WKWebsiteDataStore.
+    func performProfileSwitch(to profileID: UUID) {
+        profileManager.switchTo(profileID: profileID)
+        let existing = tabManager.tabs
+        let newTab = tabManager.createTab(profileID: profileID)
+        tabManager.select(tab: newTab)
+        for tab in existing {
+            tabManager.closeTab(tab)
         }
-        toolbarContainer.addSubview(addressBar)
-
-        NSLayoutConstraint.activate([
-            addressBar.leadingAnchor.constraint(equalTo: reloadButton.trailingAnchor, constant: 8),
-            addressBar.trailingAnchor.constraint(equalTo: toolbarContainer.trailingAnchor, constant: -12),
-            addressBar.centerYAnchor.constraint(equalTo: toolbarContainer.centerYAnchor),
-            addressBar.heightAnchor.constraint(equalToConstant: 28),
-        ])
+        tabManager.clearClosedTabStack()
+        syncDisplayedTab()
+        updateSidebar()
     }
 
-    private func setupProgressBar() {
-        progressBar.style = .bar
-        progressBar.isIndeterminate = false
-        progressBar.minValue = 0
-        progressBar.maxValue = 1
-        progressBar.isHidden = true
-        progressBar.translatesAutoresizingMaskIntoConstraints = false
-        toolbarContainer.addSubview(progressBar)
+    private func makeSidebarView() -> TabSidebarView {
+        // Build profileID → colorName map from the live profiles list
+        let profileColors: [UUID: String] = Dictionary(
+            uniqueKeysWithValues: profileManager.profiles.map { ($0.id, $0.colorName) }
+        )
+        return TabSidebarView(
+            tabs: tabManager.tabs,
+            selectedTabID: tabManager.activeTab?.id,
+            profileColors: profileColors,
+            onSelect: { [weak self] tab in
+                self?.tabManager.select(tab: tab)
+                self?.syncDisplayedTab()
+            },
+            onClose: { [weak self] tab in
+                guard let self else { return }
+                self.tabManager.closeTab(tab)
+                if self.tabManager.tabs.isEmpty {
+                    let newTab = self.tabManager.createTab()
+                    self.tabManager.select(tab: newTab)
+                }
+                self.syncDisplayedTab()
+                self.updateSidebar()
+            },
+            onNewTab: { [weak self] in
+                guard let self else { return }
+                let tab = self.tabManager.createTab()
+                self.tabManager.select(tab: tab)
+                self.syncDisplayedTab()
+                self.updateSidebar()
+                self.addressBar.focus()
+            },
+            profiles: profileManager.profiles,
+            activeProfileID: profileManager.activeProfileID,
+            onSwitchProfile: { [weak self] id in
+                guard let self else { return }
+                self.performProfileSwitch(to: id)
+            },
+            onCreateProfile: { [weak self] in
+                guard let self else { return }
+                self.profileManager.createProfile(name: "New Profile")
+                self.updateSidebar()
+            }
+        )
+    }
 
-        NSLayoutConstraint.activate([
-            progressBar.leadingAnchor.constraint(equalTo: toolbarContainer.leadingAnchor),
-            progressBar.trailingAnchor.constraint(equalTo: toolbarContainer.trailingAnchor),
-            progressBar.bottomAnchor.constraint(equalTo: toolbarContainer.bottomAnchor),
-            progressBar.heightAnchor.constraint(equalToConstant: 2),
-        ])
+    // MARK: - Sidebar Toggle
+
+    @objc func toggleSidebar(_ sender: Any?) {
+        isSidebarVisible.toggle()
+        let targetWidth: CGFloat = isSidebarVisible ? ControlSize.sidebarWidth : 0
+
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = Motion.standard
+            ctx.allowsImplicitAnimation = true
+            sidebarWidthConstraint?.constant = targetWidth
+            sidebarContainerView.isHidden = !isSidebarVisible
+            window?.contentView?.layoutSubtreeIfNeeded()
+        }
     }
 
     // MARK: - Tab Display Sync
@@ -191,132 +264,6 @@ final class BrowserWindowController: NSWindowController {
         observeProgress(for: activeTab)
     }
 
-    // MARK: - Tab Actions (Menu/Keyboard targets)
-
-    @objc func newTab(_ sender: Any?) {
-        let tab = tabManager.createTab()
-        tabManager.select(tab: tab)
-        syncDisplayedTab()
-
-        if sender != nil {
-            addressBar.focus()
-        }
-    }
-
-    @objc func closeCurrentTab(_ sender: Any?) {
-        tabManager.closeCurrentTab()
-
-        if tabManager.tabs.isEmpty {
-            let tab = tabManager.createTab()
-            tabManager.select(tab: tab)
-        }
-
-        syncDisplayedTab()
-    }
-
-    @objc func reopenClosedTab(_ sender: Any?) {
-        if let tab = tabManager.reopenClosedTab() {
-            tabManager.select(tab: tab)
-            syncDisplayedTab()
-        }
-    }
-
-    @objc func switchToTabByNumber(_ sender: NSMenuItem) {
-        let index = sender.tag - 1
-        if index == 8 {
-            tabManager.selectTab(at: tabManager.tabs.count - 1)
-        } else {
-            tabManager.selectTab(at: index)
-        }
-        syncDisplayedTab()
-    }
-
-    @objc func selectNextTab(_ sender: Any?) {
-        tabManager.selectNextTab()
-        syncDisplayedTab()
-    }
-
-    @objc func selectPreviousTab(_ sender: Any?) {
-        tabManager.selectPreviousTab()
-        syncDisplayedTab()
-    }
-
-    // MARK: - Navigation
-
-    private func navigate(to input: String) {
-        guard let tab = tabManager.activeTab else { return }
-        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-
-        if let url = URL(string: trimmed), url.scheme != nil, url.host != nil {
-            tab.load(url)
-        } else if trimmed.contains(".") && !trimmed.contains(" ") {
-            if let url = URL(string: "https://\(trimmed)") {
-                tab.load(url)
-            }
-        } else {
-            tab.loadSearch(trimmed)
-        }
-    }
-
-    @objc func goBack(_ sender: Any?) {
-        tabManager.activeTab?.goBack()
-    }
-
-    @objc func goForward(_ sender: Any?) {
-        tabManager.activeTab?.goForward()
-    }
-
-    @objc func reloadPage(_ sender: Any?) {
-        tabManager.activeTab?.reload()
-    }
-
-    @objc func hardReloadPage(_ sender: Any?) {
-        tabManager.activeTab?.reloadFromOrigin()
-    }
-
-    @objc func focusAddressBar(_ sender: Any?) {
-        addressBar.focus()
-    }
-
-    // MARK: - Find
-
-    @objc func performFind(_ sender: Any?) {
-        guard let tab = tabManager.activeTab else { return }
-
-        let alert = NSAlert()
-        alert.messageText = "Find in Page"
-        alert.addButton(withTitle: "Find")
-        alert.addButton(withTitle: "Cancel")
-
-        let textField = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
-        alert.accessoryView = textField
-
-        let response = alert.runModal()
-        if response == .alertFirstButtonReturn {
-            let query = textField.stringValue
-            if !query.isEmpty {
-                tab.webView.evaluateJavaScript("window.find('\(query.replacingOccurrences(of: "'", with: "\\'"))')", completionHandler: nil)
-            }
-        }
-    }
-
-    // MARK: - Zoom
-
-    @objc func zoomIn(_ sender: Any?) {
-        guard let tab = tabManager.activeTab else { return }
-        tab.setZoom(min(tab.zoomLevel + 0.1, 3.0))
-    }
-
-    @objc func zoomOut(_ sender: Any?) {
-        guard let tab = tabManager.activeTab else { return }
-        tab.setZoom(max(tab.zoomLevel - 0.1, 0.3))
-    }
-
-    @objc func resetZoom(_ sender: Any?) {
-        tabManager.activeTab?.setZoom(1.0)
-    }
-
     // MARK: - UI Updates
 
     private func updateUI() {
@@ -328,7 +275,8 @@ final class BrowserWindowController: NSWindowController {
 
         let tabCount = tabManager.tabs.count
         if tabCount > 1 {
-            window?.title = "[\((tabManager.selectedTabIndex) + 1)/\(tabCount)] " + (tab.title.isEmpty ? "Agent Browser" : tab.title)
+            window?.title = "[\((tabManager.selectedTabIndex) + 1)/\(tabCount)] "
+                + (tab.title.isEmpty ? "Agent Browser" : tab.title)
         }
     }
 

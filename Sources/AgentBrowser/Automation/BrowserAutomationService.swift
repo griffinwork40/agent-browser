@@ -226,6 +226,11 @@ final class BrowserAutomationService {
         guard let url = URL(string: resolved) else {
             return .failure(code: ErrorCode.invalidURL, message: "Cannot parse URL: \(urlString)")
         }
+        // Reject non-http(s) schemes (e.g. file://, javascript:) to prevent
+        // the agent API from being used as a local-file or JS-injection vector.
+        guard ["http", "https"].contains(url.scheme?.lowercased()) else {
+            return .failure(code: ErrorCode.invalidURL, message: "Unsupported URL scheme: \(url.scheme ?? "none")")
+        }
         let tab = tabManager.createTab(url: url)
         tabManager.select(tab: tab)
         return .success(OpenResult(id: tab.id.uuidString, url: url.absoluteString))
@@ -732,18 +737,26 @@ final class BrowserAutomationService {
     /// Includes a 10-second timeout to prevent indefinite hangs when the WKWebView is in a
     /// state that prevents callback delivery (zero frame, not in hierarchy, process suspended).
     private func evaluateJS(on webView: WKWebView, script: String) async throws -> Any? {
+#if DEBUG
         print("[evaluateJS] Starting eval, frame=\(webView.frame), superview=\(webView.superview != nil)")
+#endif
         return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Any?, Error>) in
+#if DEBUG
             print("[evaluateJS] About to call evaluateJavaScript")
+#endif
             webView.evaluateJavaScript(script) { result, error in
+#if DEBUG
                 print("[evaluateJS] Callback received: result=\(String(describing: result)), error=\(String(describing: error))")
+#endif
                 if let error {
                     cont.resume(throwing: error)
                 } else {
                     cont.resume(returning: result)
                 }
             }
+#if DEBUG
             print("[evaluateJS] evaluateJavaScript called, waiting for callback")
+#endif
         }
     }
 }

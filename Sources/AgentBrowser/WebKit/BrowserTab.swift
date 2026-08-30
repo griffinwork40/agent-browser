@@ -4,8 +4,14 @@ import Observation
 
 @Observable @MainActor
 final class BrowserTab: Identifiable {
-    let id = UUID()
-    let createdAt = Date()
+    // Identity and provenance — owned by the record
+    let record: TabRecord
+
+    /// Stable identity forwarded from the record.
+    var id: UUID { record.id }
+
+    /// Creation timestamp forwarded from the record.
+    var createdAt: Date { record.createdAt }
 
     // Display state
     private(set) var url: URL?
@@ -32,7 +38,22 @@ final class BrowserTab: Identifiable {
     // Callback for when a popup/new-tab navigation is requested
     var onNewTabRequested: ((URL) -> Void)?
 
-    init(configuration: WKWebViewConfiguration? = nil) {
+    /// A point-in-time snapshot of this tab's current navigation state.
+    var navState: NavigationState {
+        NavigationState(
+            url: url,
+            title: title,
+            isLoading: isLoading,
+            loadProgress: loadProgress,
+            canGoBack: canGoBack,
+            canGoForward: canGoForward,
+            isSecure: isSecure,
+            zoomLevel: zoomLevel
+        )
+    }
+
+    init(record: TabRecord = TabRecord(), configuration: WKWebViewConfiguration? = nil) {
+        self.record = record
         let config = configuration ?? Self.makeDefaultConfiguration()
         let wv = WKWebView(frame: .zero, configuration: config)
         wv.allowsBackForwardNavigationGestures = true
@@ -142,14 +163,14 @@ final class BrowserTab: Identifiable {
 
         // Inject the automation bridge into every page for element inspection,
         // click, fill, press, select, and wait operations.
-        // Runs in the page content world so evaluateJavaScript() can access
-        // window.__agentBrowser directly. The bridge is safe to expose --
-        // it only provides inspection and interaction helpers, no privileged APIs.
+        // Runs in an isolated content world ("AgentBridge") so page JS cannot
+        // access window.__agentBrowser or tamper with the bridge.
         if let bridgeJS = Self.loadAutomationBridge() {
             let script = WKUserScript(
                 source: bridgeJS,
                 injectionTime: .atDocumentEnd,
-                forMainFrameOnly: true
+                forMainFrameOnly: true,
+                in: .world(name: "AgentBridge")
             )
             config.userContentController.addUserScript(script)
         }
@@ -168,7 +189,10 @@ final class BrowserTab: Identifiable {
         if let url = Bundle.main.url(forResource: "automation-bridge", withExtension: "js") {
             return try? String(contentsOf: url, encoding: .utf8)
         }
-        // Development fallback: load from cwd-relative source path
+#if DEBUG
+        // Development-only fallback: load from cwd-relative source path.
+        // Guarded by #if DEBUG so release builds cannot be attacked by
+        // placing a malicious file at these relative paths.
         let devPaths = [
             "Sources/AgentBrowser/WebKit/UserScripts/automation-bridge.js",
             "../Sources/AgentBrowser/WebKit/UserScripts/automation-bridge.js",
@@ -178,6 +202,7 @@ final class BrowserTab: Identifiable {
                 return try? String(contentsOfFile: path, encoding: .utf8)
             }
         }
+#endif
         print("[BrowserTab] Warning: automation-bridge.js not found")
         return nil
     }

@@ -4,18 +4,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var windowController: BrowserWindowController?
     private var agentServer: AgentHTTPServer?
 
-    // Shared state: the single TabManager for the whole app.
+    // Shared state: ProfileManager and TabManager for the whole app.
     // Initialized in applicationDidFinishLaunching (already on main thread).
+    private var profileManager: ProfileManager?
     private var tabManager: TabManager?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupMainMenu()
 
-        let tm = TabManager()
+        let pm = ProfileManager()
+        self.profileManager = pm
+
+        let tm = TabManager(profileManager: pm)
         self.tabManager = tm
 
         // Create the browser window
-        windowController = BrowserWindowController(tabManager: tm)
+        windowController = BrowserWindowController(tabManager: tm, profileManager: pm)
         windowController?.showWindow(nil)
 
         // Start the agent automation server
@@ -77,6 +81,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hardReloadItem.keyEquivalentModifierMask = [.command, .shift]
         viewMenu.addItem(hardReloadItem)
         viewMenu.addItem(.separator())
+        let toggleSidebarItem = NSMenuItem(
+            title: "Toggle Sidebar",
+            action: #selector(BrowserWindowController.toggleSidebar(_:)),
+            keyEquivalent: "L"
+        )
+        toggleSidebarItem.keyEquivalentModifierMask = [.command, .shift]
+        viewMenu.addItem(toggleSidebarItem)
+        viewMenu.addItem(.separator())
         viewMenu.addItem(NSMenuItem(title: "Zoom In", action: #selector(BrowserWindowController.zoomIn(_:)), keyEquivalent: "+"))
         viewMenu.addItem(NSMenuItem(title: "Zoom Out", action: #selector(BrowserWindowController.zoomOut(_:)), keyEquivalent: "-"))
         viewMenu.addItem(NSMenuItem(title: "Actual Size", action: #selector(BrowserWindowController.resetZoom(_:)), keyEquivalent: "0"))
@@ -93,6 +105,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let navMenuItem = NSMenuItem()
         navMenuItem.submenu = navMenu
         mainMenu.addItem(navMenuItem)
+
+        // Profiles menu
+        let profilesMenu = NSMenu(title: "Profiles")
+        let nextProfileItem = NSMenuItem(
+            title: "Next Profile",
+            action: #selector(BrowserWindowController.switchToNextProfile(_:)),
+            keyEquivalent: "]"
+        )
+        nextProfileItem.keyEquivalentModifierMask = [.command, .shift]
+        profilesMenu.addItem(nextProfileItem)
+        let prevProfileItem = NSMenuItem(
+            title: "Previous Profile",
+            action: #selector(BrowserWindowController.switchToPreviousProfile(_:)),
+            keyEquivalent: "["
+        )
+        prevProfileItem.keyEquivalentModifierMask = [.command, .shift]
+        profilesMenu.addItem(prevProfileItem)
+        profilesMenu.addItem(.separator())
+        let newProfileItem = NSMenuItem(
+            title: "New Profile...",
+            action: #selector(BrowserWindowController.createNewProfile(_:)),
+            keyEquivalent: "N"
+        )
+        newProfileItem.keyEquivalentModifierMask = [.command, .shift]
+        profilesMenu.addItem(newProfileItem)
+        let profilesMenuItem = NSMenuItem()
+        profilesMenuItem.submenu = profilesMenu
+        mainMenu.addItem(profilesMenuItem)
 
         // Window menu
         let windowMenu = NSMenu(title: "Window")

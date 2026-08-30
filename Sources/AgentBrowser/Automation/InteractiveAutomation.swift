@@ -166,12 +166,15 @@ extension BrowserAutomationService {
         let tabTitle = tab.title
         let tabURL = tab.url?.absoluteString
 
-        tab.webView.evaluateJavaScript(script) { result, error in
+        // The bridge lives in the isolated AgentBridge content world.
+        tab.webView.evaluateJavaScript(script, in: nil, in: .world(name: "AgentBridge")) { resultOrError in
             DispatchQueue.main.async {
-                if let error {
-                    completion(.failure(code: ErrorCode.javaScriptError, message: error.localizedDescription)); return
+                switch resultOrError {
+                case .failure(let error):
+                    completion(.failure(code: ErrorCode.javaScriptError, message: error.localizedDescription))
+                case .success(let result):
+                    completion(Self.parseInspectResult(raw: result, tabID: tabID, title: tabTitle, url: tabURL))
                 }
-                completion(Self.parseInspectResult(raw: result, tabID: tabID, title: tabTitle, url: tabURL))
             }
         }
     }
@@ -182,7 +185,7 @@ extension BrowserAutomationService {
         }
         let script = "window.__agentBrowser ? window.__agentBrowser.inspect() : JSON.stringify({error:'BRIDGE_NOT_LOADED'})"
         do {
-            let raw = try await evalJSOnTab(tab, script: script)
+            let raw = try await evalJSOnTabInBridgeWorld(tab, script: script)
             return Self.parseInspectResult(raw: raw, tabID: tab.id.uuidString, title: tab.title, url: tab.url?.absoluteString)
         } catch {
             return .failure(code: ErrorCode.javaScriptError, message: error.localizedDescription)
@@ -209,6 +212,7 @@ extension BrowserAutomationService {
 
     // MARK: - Shared JS Helpers
 
+    /// Evaluate JS in the default (page content) world.
     func evalJSOnTab(_ tab: BrowserTab, script: String) async throws -> Any? {
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Any?, Error>) in
             tab.webView.evaluateJavaScript(script) { result, error in
@@ -218,11 +222,25 @@ extension BrowserAutomationService {
         }
     }
 
+    /// Evaluate JS in the isolated AgentBridge content world (for bridge calls).
+    func evalJSOnTabInBridgeWorld(_ tab: BrowserTab, script: String) async throws -> Any? {
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Any?, Error>) in
+            tab.webView.evaluateJavaScript(script, in: nil, in: .world(name: "AgentBridge")) { result in
+                switch result {
+                case .failure(let error): cont.resume(throwing: error)
+                case .success(let value): cont.resume(returning: value)
+                }
+            }
+        }
+    }
+
     func escapeJSString(_ s: String) -> String {
         s.replacingOccurrences(of: "\\", with: "\\\\")
          .replacingOccurrences(of: "'", with: "\\'")
          .replacingOccurrences(of: "\n", with: "\\n")
          .replacingOccurrences(of: "\r", with: "\\r")
+         .replacingOccurrences(of: "\u{2028}", with: "\\u2028")
+         .replacingOccurrences(of: "\u{2029}", with: "\\u2029")
     }
 
     static func mapJSErrorCode(_ error: String) -> String {

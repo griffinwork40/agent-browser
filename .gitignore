@@ -7,3 +7,5 @@ DerivedData/
 *.swo
 *~
 spike/BrowserSpike
+AgentBrowser.app
+.afk-worktree-meta.json

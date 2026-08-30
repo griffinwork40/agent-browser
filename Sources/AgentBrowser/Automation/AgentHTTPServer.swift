@@ -16,6 +16,10 @@ final class AgentHTTPServer {
     let token: String
     private(set) var boundPort: UInt16 = 0
 
+    /// Maximum allowed request body size (8 MiB). Requests exceeding this
+    /// are rejected with 413 before the body is fully buffered.
+    private static let maxBodySize = 8 * 1024 * 1024
+
     init(automationService: BrowserAutomationService, port: UInt16 = 8833) {
         self.automationService = automationService
         self.requestedPort = port
@@ -70,6 +74,12 @@ final class AgentHTTPServer {
 
     /// Buffer HTTP data until Content-Length body bytes are received.
     private func bufferUntilComplete(_ conn: NWConnection, accumulated: Data) {
+        // Reject oversized payloads before buffering more data.
+        if accumulated.count > Self.maxBodySize {
+            sendHTTP(conn, status: 413, contentType: "application/json",
+                     body: Data(#"{"error":"Request body exceeds 8 MiB limit"}"#.utf8))
+            return
+        }
         guard let raw = String(data: accumulated, encoding: .utf8) else {
             conn.cancel(); return
         }
@@ -80,6 +90,12 @@ final class AgentHTTPServer {
             if let clLine = headerPart.split(separator: "\r\n")
                 .first(where: { $0.lowercased().hasPrefix("content-length:") }),
                let cl = Int(clLine.split(separator: ":")[1].trimmingCharacters(in: .whitespaces)) {
+                // Reject if the declared Content-Length itself exceeds the cap.
+                if cl > Self.maxBodySize {
+                    sendHTTP(conn, status: 413, contentType: "application/json",
+                             body: Data(#"{"error":"Request body exceeds 8 MiB limit"}"#.utf8))
+                    return
+                }
                 let bodyReceived = accumulated.count - bodyStart
                 if bodyReceived < cl {
                     // Need more data
@@ -102,12 +118,22 @@ final class AgentHTTPServer {
     private func routeAndRespond(_ conn: NWConnection, raw: String) {
         let (method, path, headers) = parseRequestLine(raw)
 
-        // Host validation
-        if let host = headers["host"] {
-            let ok = ["127.0.0.1:\(boundPort)", "localhost:\(boundPort)", "127.0.0.1", "localhost"]
-            guard ok.contains(host.lowercased()) else {
-                respond(conn, AgentResponse.failure(code: "FORBIDDEN", message: "Invalid Host")); return
-            }
+        // Host validation — reject requests that are missing the Host header or
+        // whose Host doesn't match the loopback allowlist (prevents DNS rebinding).
+        let allowedHosts: Set<String> = [
+            "127.0.0.1:\(boundPort)", "localhost:\(boundPort)"
+        ]
+        guard let host = headers["host"]?.lowercased(), allowedHosts.contains(host) else {
+            respond(conn, AgentResponse.failure(code: "FORBIDDEN", message: "Invalid Host")); return
+        }
+
+        // CORS protection — reject any cross-origin request. A browser-based page
+        // sending fetch() to the local API will include an Origin header; rejecting
+        // it prevents CSRF attacks from pages loaded in the browser itself.
+        if let origin = headers["origin"], !origin.isEmpty {
+            sendHTTP(conn, status: 403, contentType: "application/json",
+                     body: Data(#"{"error":"FORBIDDEN","message":"Cross-origin requests are not allowed"}"#.utf8))
+            return
         }
 
         // Health (no auth)
@@ -226,6 +252,7 @@ final class AgentHTTPServer {
         let text: String = switch status {
         case 200: "OK"; case 201: "Created"; case 400: "Bad Request"
         case 401: "Unauthorized"; case 403: "Forbidden"; case 404: "Not Found"
+        case 413: "Payload Too Large"
         default: "Error"
         }
         var header = "HTTP/1.1 \(status) \(text)\r\nContent-Type: \(contentType)\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n"
@@ -273,11 +300,15 @@ final class AgentHTTPServer {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let desc: [String: Any] = ["url": "http://127.0.0.1:\(boundPort)", "token": token,
                                     "pid": ProcessInfo.processInfo.processIdentifier, "version": "0.3.0"]
-        let path = dir.appendingPathComponent("connection.json")
-        if let data = try? JSONSerialization.data(withJSONObject: desc, options: [.prettyPrinted, .sortedKeys]) {
-            try? data.write(to: path)
-            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path.path)
-        }
+        let finalPath = dir.appendingPathComponent("connection.json")
+        guard let data = try? JSONSerialization.data(withJSONObject: desc, options: [.prettyPrinted, .sortedKeys]) else { return }
+        // Write to a temp file with mode 0600 set BEFORE rename so there is no
+        // window where the file exists world-readable (TOCTOU fix).
+        let tmpPath = dir.appendingPathComponent(".connection.json.tmp")
+        let attributes: [FileAttributeKey: Any] = [.posixPermissions: 0o600]
+        FileManager.default.createFile(atPath: tmpPath.path, contents: data, attributes: attributes)
+        try? FileManager.default.removeItem(at: finalPath)
+        try? FileManager.default.moveItem(at: tmpPath, to: finalPath)
     }
 
     private func removeConnectionDescriptor() {

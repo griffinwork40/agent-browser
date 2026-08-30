@@ -10,6 +10,8 @@ import Observation
 @Observable @MainActor
 final class TabManager {
 
+    let profileManager: ProfileManager
+
     /// All open tabs, ordered. Append-only externally; removal via closeTab.
     private(set) var tabs: [BrowserTab] = []
 
@@ -17,7 +19,8 @@ final class TabManager {
     private(set) var selectedTabIndex: Int = -1
 
     /// Stack of recently closed tab URLs for reopening.
-    private(set) var closedTabStack: [(url: URL?, index: Int)] = []
+    /// Stores the URL, original index, and profile the tab belonged to.
+    private(set) var closedTabStack: [(url: URL?, index: Int, profileID: UUID)] = []
 
     /// Called whenever the selected tab changes (from any source: UI or automation).
     /// The window controller registers this to sync its displayed WKWebView.
@@ -29,17 +32,37 @@ final class TabManager {
         return tabs[selectedTabIndex]
     }
 
+    init(profileManager: ProfileManager) {
+        self.profileManager = profileManager
+    }
+
+    /// Convenience initialiser for tests and previews.
+    convenience init() {
+        self.init(profileManager: ProfileManager())
+    }
+
     // MARK: - Tab Lifecycle
 
     /// Create a new empty tab. Returns it.
+    /// - Parameters:
+    ///   - url: Optional URL to load immediately.
+    ///   - provenance: Who created this tab.
+    ///   - profileID: Which profile's data store to use. Defaults to the active profile.
     @discardableResult
-    func createTab(url: URL? = nil) -> BrowserTab {
-        let tab = BrowserTab()
+    func createTab(
+        url: URL? = nil,
+        provenance: TabProvenance = .human,
+        profileID: UUID? = nil
+    ) -> BrowserTab {
+        let resolvedProfileID = profileID ?? profileManager.activeProfileID
+        let record = TabRecord(provenance: provenance, profileID: resolvedProfileID)
+        let config = profileManager.makeConfiguration(for: resolvedProfileID)
+        let tab = BrowserTab(record: record, configuration: config)
         tabs.append(tab)
 
-        // Wire popup callback
+        // Wire popup callback — child tabs inherit the parent's profile.
         tab.onNewTabRequested = { [weak self] u in
-            let t = self?.createTab(url: u)
+            let t = self?.createTab(url: u, profileID: resolvedProfileID)
             if let t { self?.select(tab: t) }
         }
 
@@ -53,7 +76,7 @@ final class TabManager {
     @discardableResult
     func closeTab(_ tab: BrowserTab) -> Bool {
         guard let index = tabs.firstIndex(where: { $0.id == tab.id }) else { return false }
-        closedTabStack.append((url: tab.url, index: index))
+        closedTabStack.append((url: tab.url, index: index, profileID: tab.record.profileID))
         tabs.remove(at: index)
 
         // Adjust selectedTabIndex
@@ -71,20 +94,37 @@ final class TabManager {
         closeTab(tab)
     }
 
+    /// Clear the closed-tab history stack. Call after a profile switch so
+    /// Cmd+Shift+T cannot reopen tabs that belonged to a different profile.
+    func clearClosedTabStack() {
+        closedTabStack.removeAll()
+    }
+
     /// Reopen the most recently closed tab. Returns it, or nil.
+    /// Blank tabs (no URL) are restored as new empty tabs rather than discarded.
     @discardableResult
     func reopenClosedTab() -> BrowserTab? {
-        guard let closed = closedTabStack.popLast(), let url = closed.url else { return nil }
-        let tab = BrowserTab()
+        // Pop first; only return nil if the stack was empty.
+        guard let closed = closedTabStack.popLast() else { return nil }
+        let profileID = closed.profileID
+        let record = TabRecord(
+            provenance: .restored(originalAgentID: nil, originalSessionTag: nil),
+            profileID: profileID
+        )
+        let config = profileManager.makeConfiguration(for: profileID)
+        let tab = BrowserTab(record: record, configuration: config)
         let insertIndex = min(closed.index, tabs.count)
         tabs.insert(tab, at: insertIndex)
 
         tab.onNewTabRequested = { [weak self] u in
-            let t = self?.createTab(url: u)
+            let t = self?.createTab(url: u, profileID: profileID)
             if let t { self?.select(tab: t) }
         }
 
-        tab.load(url)
+        // Load the saved URL if one exists; otherwise restore as a blank tab.
+        if let url = closed.url {
+            tab.load(url)
+        }
         return tab
     }
 
