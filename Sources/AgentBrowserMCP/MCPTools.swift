@@ -97,7 +97,7 @@ struct MCPTools {
                  required: ["tab_id"]),
 
             tool("browser_auth_status",
-                 desc: "Detect whether a page requires authentication. Returns a status: 'authenticated', 'login_required', 'session_expired', 'mfa_required', 'captcha_blocked', or 'paywall'. Use before attempting to interact with a page that may need login. Returns detection signals (URL patterns, password fields, login forms, CAPTCHA, MFA inputs) so the agent can decide how to proceed.",
+                 desc: "Detect whether a page requires authentication. Returns a status: 'authenticated', 'login_required', 'session_expired', 'mfa_required', 'captcha_blocked', 'paywall', or 'unknown' (detection script returned no status -- treat as needing human review). Use before attempting to interact with a page that may need login. Returns detection signals (URL patterns, password fields, login forms, CAPTCHA, MFA inputs) so the agent can decide how to proceed.",
                  props: ["tab_id": prop("string", "Tab ID from browser_tabs")],
                  required: ["tab_id"]),
 

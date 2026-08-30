@@ -253,15 +253,12 @@ struct AuthStatusResult: Codable, Sendable {
         }
     }
 
-    /// Sanitize a page title: truncate to `maxLength` and strip ASCII control
-    /// characters (< 0x20) except horizontal tab (0x09) and newline (0x0A).
+    /// Sanitize a page title: truncate to `maxLength` grapheme clusters (preserving
+    /// cluster boundaries) and strip all ASCII control characters (< 0x20).
+    /// Page titles never legitimately contain newlines or tabs.
     private static func sanitize(_ raw: String, maxLength: Int) -> String {
-        let truncated = raw.count > maxLength
-            ? String(raw.unicodeScalars.prefix(maxLength))
-            : raw
-        return truncated.unicodeScalars.filter { scalar in
-            let v = scalar.value
-            return v >= 0x20 || v == 0x09 || v == 0x0A
-        }.reduce(into: "") { $0 += String($1) }
+        let truncated = raw.count > maxLength ? String(raw.prefix(maxLength)) : raw
+        return truncated.unicodeScalars.filter { $0.value >= 0x20 }
+            .reduce(into: "") { $0 += String($1) }
     }
 }

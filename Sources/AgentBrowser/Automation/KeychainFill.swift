@@ -36,30 +36,35 @@ extension BrowserAutomationService {
             return
         }
 
-        // Step 1: Look up the credential from the Keychain.
-        // SecItemCopyMatching will trigger the OS permission dialog.
-        let lookup = keychainLookup(
-            domain: domain,
-            account: account,
-            type: credentialType
-        )
-
-        if let error = lookup.error {
-            completion(.failure(code: ErrorCode.keychainError, message: error))
-            return
-        }
-
-        guard let credential = lookup.value else {
-            completion(.failure(code: ErrorCode.keychainError, message: "No credential found"))
-            return
-        }
-
-        // Step 2: Inject the credential directly into the DOM via the JS bridge.
-        // Use callAsyncJavaScript with structured arguments so the credential is
-        // passed as a data binding, never interpolated into JS source code.
-        let script = "return window.__agentBrowser.fill(elementId, value)"
+        // Step 1: Look up the credential from the Keychain OFF the main thread.
+        // SecItemCopyMatching with interactionNotAllowed=false blocks until the
+        // user responds to Touch ID / password dialog -- must not freeze the UI.
         DispatchQueue.global(qos: .userInitiated).async {
-            // keychainLookup was already called above; now eval JS on main thread.
+            let lookup = self.keychainLookup(
+                domain: domain,
+                account: account,
+                type: credentialType
+            )
+
+            if let error = lookup.error {
+                DispatchQueue.main.async {
+                    completion(.failure(code: ErrorCode.keychainError, message: error))
+                }
+                return
+            }
+
+            guard let credential = lookup.value else {
+                DispatchQueue.main.async {
+                    completion(.failure(code: ErrorCode.keychainError, message: "No credential found"))
+                }
+                return
+            }
+
+            // Step 2: Inject the credential directly into the DOM via the JS bridge.
+            // Use callAsyncJavaScript with structured arguments so the credential is
+            // passed as a data binding, never interpolated into JS source code.
+            // WKWebView calls must happen on the main thread.
+            let script = "return window.__agentBrowser.fill(elementId, value)"
             DispatchQueue.main.async {
                 tab.webView.callAsyncJavaScript(
                     script,
@@ -101,11 +106,18 @@ extension BrowserAutomationService {
             return .failure(code: ErrorCode.tabNotFound, message: "No tab with id: \(tabId)")
         }
 
-        let lookup = keychainLookup(
-            domain: domain,
-            account: account,
-            type: credentialType
-        )
+        // Run keychainLookup off the main thread -- SecItemCopyMatching with
+        // interactionNotAllowed=false blocks until user responds to the OS dialog.
+        let lookup: (value: String?, error: String?) = await withCheckedContinuation { cont in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let result = self.keychainLookup(
+                    domain: domain,
+                    account: account,
+                    type: credentialType
+                )
+                cont.resume(returning: result)
+            }
+        }
 
         if let error = lookup.error {
             return .failure(code: ErrorCode.keychainError, message: error)
