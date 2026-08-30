@@ -1,7 +1,7 @@
 {
-  "owner": "interactive",
+  "owner": "agent",
   "pid": 37064,
-  "createdAt": "2026-08-30T01:46:54.037Z",
-  "baseSha": "4b459b4c3cfdbe3e0f6da43a9443f65519d1071d",
-  "baseBranch": "origin/main"
+  "createdAt": "2026-08-30T02:21:28.529Z",
+  "baseSha": "3b2c91625cf6626f5916640a90fe36f21521397d",
+  "baseBranch": "afk/research-human-ux-redesign"
 }

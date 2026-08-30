@@ -36,6 +36,11 @@ final class TabManager {
         self.profileManager = profileManager
     }
 
+    /// Convenience initialiser for tests and previews.
+    convenience init() {
+        self.init(profileManager: ProfileManager())
+    }
+
     // MARK: - Tab Lifecycle
 
     /// Create a new empty tab. Returns it.
@@ -90,9 +95,11 @@ final class TabManager {
     }
 
     /// Reopen the most recently closed tab. Returns it, or nil.
+    /// Blank tabs (no URL) are restored as new empty tabs rather than discarded.
     @discardableResult
     func reopenClosedTab() -> BrowserTab? {
-        guard let closed = closedTabStack.popLast(), let url = closed.url else { return nil }
+        // Pop first; only return nil if the stack was empty.
+        guard let closed = closedTabStack.popLast() else { return nil }
         let profileID = closed.profileID
         let record = TabRecord(
             provenance: .restored(originalAgentID: nil, originalSessionTag: nil),
@@ -108,7 +115,10 @@ final class TabManager {
             if let t { self?.select(tab: t) }
         }
 
-        tab.load(url)
+        // Load the saved URL if one exists; otherwise restore as a blank tab.
+        if let url = closed.url {
+            tab.load(url)
+        }
         return tab
     }
 

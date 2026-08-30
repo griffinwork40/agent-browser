@@ -189,7 +189,10 @@ final class BrowserTab: Identifiable {
         if let url = Bundle.main.url(forResource: "automation-bridge", withExtension: "js") {
             return try? String(contentsOf: url, encoding: .utf8)
         }
-        // Development fallback: load from cwd-relative source path
+#if DEBUG
+        // Development-only fallback: load from cwd-relative source path.
+        // Guarded by #if DEBUG so release builds cannot be attacked by
+        // placing a malicious file at these relative paths.
         let devPaths = [
             "Sources/AgentBrowser/WebKit/UserScripts/automation-bridge.js",
             "../Sources/AgentBrowser/WebKit/UserScripts/automation-bridge.js",
@@ -199,6 +202,7 @@ final class BrowserTab: Identifiable {
                 return try? String(contentsOfFile: path, encoding: .utf8)
             }
         }
+#endif
         print("[BrowserTab] Warning: automation-bridge.js not found")
         return nil
     }

@@ -226,6 +226,11 @@ final class BrowserAutomationService {
         guard let url = URL(string: resolved) else {
             return .failure(code: ErrorCode.invalidURL, message: "Cannot parse URL: \(urlString)")
         }
+        // Reject non-http(s) schemes (e.g. file://, javascript:) to prevent
+        // the agent API from being used as a local-file or JS-injection vector.
+        guard ["http", "https"].contains(url.scheme?.lowercased()) else {
+            return .failure(code: ErrorCode.invalidURL, message: "Unsupported URL scheme: \(url.scheme ?? "none")")
+        }
         let tab = tabManager.createTab(url: url)
         tabManager.select(tab: tab)
         return .success(OpenResult(id: tab.id.uuidString, url: url.absoluteString))

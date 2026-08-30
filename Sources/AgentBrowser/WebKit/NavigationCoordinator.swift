@@ -73,8 +73,14 @@ final class NavigationCoordinator: NSObject, WKNavigationDelegate {
         didReceive challenge: URLAuthenticationChallenge,
         completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
     ) {
-        // Accept server trust by default for now
-        if challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
+        guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust else {
+            completionHandler(.performDefaultHandling, nil)
+            return
+        }
+        // Allow loopback hosts for local dev servers (e.g. self-signed certs).
+        // All other hosts use the system's default certificate validation.
+        let host = challenge.protectionSpace.host
+        if (host == "localhost" || host == "127.0.0.1"),
            let trust = challenge.protectionSpace.serverTrust {
             completionHandler(.useCredential, URLCredential(trust: trust))
         } else {

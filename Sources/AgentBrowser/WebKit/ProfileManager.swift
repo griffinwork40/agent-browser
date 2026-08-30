@@ -18,12 +18,21 @@ final class ProfileManager {
     /// Cached data stores — created lazily, reused across calls.
     private var dataStores: [UUID: WKWebsiteDataStore] = [:]
 
-    init() {
+    /// Production initialiser. Persists to Application Support/AgentBrowser/profiles.json.
+    convenience init() {
         let appSupport = FileManager.default
             .urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let dir = appSupport.appendingPathComponent("AgentBrowser", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        storageURL = dir.appendingPathComponent("profiles.json")
+        self.init(storageURL: dir.appendingPathComponent("profiles.json"))
+    }
+
+    /// Designated initialiser. Accepts an explicit storage URL so tests can
+    /// supply a temp-directory path and avoid sharing on-disk state.
+    init(storageURL: URL) {
+        self.storageURL = storageURL
+        try? FileManager.default.createDirectory(at: storageURL.deletingLastPathComponent(),
+                                                 withIntermediateDirectories: true)
 
         // Load saved profiles or seed with the default.
         if let data = try? Data(contentsOf: storageURL),
@@ -124,6 +133,10 @@ final class ProfileManager {
         if let url = Bundle.main.url(forResource: "automation-bridge", withExtension: "js") {
             return try? String(contentsOf: url, encoding: .utf8)
         }
+#if DEBUG
+        // Development-only fallback: load from cwd-relative source path.
+        // Guarded by #if DEBUG so release builds cannot be attacked by
+        // placing a malicious file at these relative paths.
         let devPaths = [
             "Sources/AgentBrowser/WebKit/UserScripts/automation-bridge.js",
             "../Sources/AgentBrowser/WebKit/UserScripts/automation-bridge.js",
@@ -133,6 +146,7 @@ final class ProfileManager {
                 return try? String(contentsOfFile: path, encoding: .utf8)
             }
         }
+#endif
         return nil
     }
 }

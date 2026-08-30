@@ -3,6 +3,7 @@
 // Kept in a separate file to stay under the 350 LOC cap on the main controller.
 
 import AppKit
+import WebKit
 
 // MARK: - Tab Actions (Menu / Keyboard targets)
 
@@ -98,10 +99,11 @@ extension BrowserWindowController {
         if response == .alertFirstButtonReturn {
             let query = textField.stringValue
             if !query.isEmpty {
-                tab.webView.evaluateJavaScript(
-                    "window.find('\(query.replacingOccurrences(of: "'", with: "\\'"))')",
-                    completionHandler: nil
-                )
+                // Use WKWebView.find(_:configuration:) (macOS 13+) to avoid
+                // any JS-injection surface. No string interpolation required.
+                let config = WKFindConfiguration()
+                config.wraps = true
+                tab.webView.find(query, configuration: config) { _ in }
             }
         }
     }
