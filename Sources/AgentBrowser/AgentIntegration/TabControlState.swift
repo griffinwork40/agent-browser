@@ -6,6 +6,7 @@ enum ControlState: String, Sendable, Codable {
     case agentActive   // agent performing action
     case interrupting  // human touched, agent completing atomic action
     case humanOwns     // human took over, agent paused
+    case awaitingAuth  // agent detected auth wall, waiting for human to authenticate
     case error         // agent action failed
 }
 
@@ -24,6 +25,7 @@ final class TabControlState: Identifiable {
     private(set) var activeAgentID: String?
     private(set) var lastTransitionAt: Date = Date()
     private(set) var interruptTrigger: InterruptTrigger?
+    private(set) var authReason: String?
 
     init(tabID: UUID) {
         self.tabID = tabID
@@ -44,11 +46,16 @@ final class TabControlState: Identifiable {
 
     /// Agent completes its action normally
     func agentCompletes() {
-        guard state == .agentActive || state == .interrupting else { return }
+        guard state == .agentActive || state == .interrupting || state == .awaitingAuth else { return }
         if state == .interrupting {
             // Was interrupted; hand off to human
             interruptTrigger = nil
             transition(to: .humanOwns)
+        } else if state == .awaitingAuth {
+            // Agent completed while awaiting auth (e.g. auth resolved externally)
+            activeAgentID = nil
+            authReason = nil
+            transition(to: .idle)
         } else {
             activeAgentID = nil
             transition(to: .idle)
@@ -57,9 +64,10 @@ final class TabControlState: Identifiable {
 
     /// Agent action failed
     func agentFailed() {
-        guard state == .agentActive || state == .interrupting else { return }
+        guard state == .agentActive || state == .interrupting || state == .awaitingAuth else { return }
         activeAgentID = nil
         interruptTrigger = nil
+        authReason = nil
         transition(to: .error)
     }
 
@@ -70,9 +78,19 @@ final class TabControlState: Identifiable {
         transition(to: .interrupting)
     }
 
-    /// Human explicitly resumes agent
+    /// Agent detected an auth wall -- hand off to human for authentication.
+    /// The agent remains associated but paused until the human completes auth.
+    /// Only valid from .agentActive -- a live agent must exist to await auth.
+    func awaitAuth(reason: String? = nil) {
+        guard state == .agentActive else { return }
+        authReason = reason
+        transition(to: .awaitingAuth)
+    }
+
+    /// Human explicitly resumes agent (from humanOwns or awaitingAuth)
     func humanResumes() {
-        guard state == .humanOwns else { return }
+        guard state == .humanOwns || state == .awaitingAuth else { return }
+        authReason = nil
         transition(to: .agentActive)
     }
 
@@ -80,6 +98,7 @@ final class TabControlState: Identifiable {
     func humanEnds() {
         activeAgentID = nil
         interruptTrigger = nil
+        authReason = nil
         transition(to: .idle)
     }
 

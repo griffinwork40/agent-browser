@@ -68,4 +68,22 @@ final class TakeoverHandler {
     var humanOwnedTabs: [UUID] {
         tabStates.filter { $0.value.state == .humanOwns }.map { $0.key }
     }
+
+    /// All tabs awaiting human authentication
+    var awaitingAuthTabs: [UUID] {
+        tabStates.filter { $0.value.state == .awaitingAuth }.map { $0.key }
+    }
+
+    /// Transition a tab to awaitingAuth state.
+    /// Agent pauses and the human completes the auth flow in the live browser.
+    func requestAuth(tabID: UUID) {
+        controlState(for: tabID).awaitAuth()
+    }
+
+    /// Human completed authentication; resume agent on this tab.
+    func authCompleted(tabID: UUID) {
+        let state = controlState(for: tabID)
+        guard state.state == .awaitingAuth else { return }
+        state.humanResumes()
+    }
 }

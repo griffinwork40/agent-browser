@@ -99,6 +99,43 @@ extension MCPTools {
         return (content, false)
     }
 
+    /// Fill from Keychain: the response must NEVER contain the credential.
+    /// The browser host does the Keychain lookup + DOM fill atomically.
+    /// We only report success/failure to the MCP client.
+    func callBrowserFillFromKeychain(params: [String: Any]) -> ([[String: Any]], Bool) {
+        let (result, error) = BrowserClient.call(method: "auth.fillFromKeychain", params: params)
+        if let error { return toolError(error) }
+        guard let dict = result as? [String: Any] else { return toolError("Unexpected response") }
+
+        if let err = dict["error"] as? String {
+            let domain = params["domain"] as? String ?? ""
+            let type = params["type"] as? String ?? "password"
+            return toolError("Failed to fill \(type) for \(domain): \(err)")
+        }
+
+        // Require an explicit ok:true before reporting success.
+        guard dict["ok"] as? Bool == true else {
+            return toolError("Unexpected response: ok flag missing or false")
+        }
+
+        // Build the success message entirely from known-safe sources:
+        // params (caller-supplied, non-secret) and elementId from the response.
+        // dict is not used for any other field to avoid leaking response data.
+        let domain = params["domain"] as? String ?? ""
+        let type = params["type"] as? String ?? "password"
+        let elementId = dict["elementId"] as? String
+
+        // Debug assertion: the response dict must not carry credential-like keys.
+        assert(dict["value"] == nil && dict["password"] == nil && dict["credential"] == nil,
+               "Keychain fill response must never contain credential data")
+
+        var msg = "Filled \(type) field"
+        if let elementId { msg += " (\(elementId))" }
+        msg += " from Keychain for \(domain)"
+        msg += " -- credential was injected directly into the page (not shown here)"
+        return textContent(msg)
+    }
+
     // MARK: - Internal Helpers
 
     private func toolError(_ message: String) -> ([[String: Any]], Bool) {

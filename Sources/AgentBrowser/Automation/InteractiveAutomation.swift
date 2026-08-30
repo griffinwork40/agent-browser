@@ -104,7 +104,7 @@ extension BrowserAutomationService {
             return true
 
         default:
-            return false
+            return routeAuth(method, params: params, completion: completion)
         }
     }
 
@@ -159,7 +159,7 @@ extension BrowserAutomationService {
             return await waitResponse(id: id, condition: condition, value: value, timeout: timeout)
 
         default:
-            return nil
+            return await routeAuthAsync(method, params: params)
         }
     }
 
