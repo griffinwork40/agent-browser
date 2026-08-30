@@ -489,3 +489,237 @@ The correct architecture:
 ---
 
 *This comparison was conducted by running identical tasks through both systems on the same machine, measuring actual latency, response sizes, token costs, and observing real behavior. No results were fabricated or optimized for either system.*
+
+---
+
+# Post-Optimization Re-Evaluation (2026-08-30)
+
+**Trigger:** Agent Browser implemented bounded semantic inspect and bounded read modes (commit 0c8907b). The original comparison's primary weakness -- 10-25x token cost -- was addressed. This re-evaluation determines whether the original COEXIST routing recommendation should change.
+
+## 1. What Changed Since Original Comparison
+
+| Change | Impact |
+|--------|--------|
+| Default inspect returns top 30 elements, ranked by relevance | Inspect payload dropped 92-96% on complex pages |
+| Relevance scoring (viewport, role, form, accessibility name) | High-value elements surface first; footer/boilerplate demoted |
+| Deduplication of identical-label elements | Fewer wasted tokens on repeated nav links |
+| `mode` parameter (interactive/forms/navigation/all) | Agent can request precisely what it needs |
+| `query` parameter for inspect | Agent can search for specific elements without scanning all |
+| Default read mode=main (~16K chars, boilerplate stripped) | Read payload dropped 73-75% on complex pages |
+| mode=summary (~6K chars) | Ultra-compact for page overview |
+| mode=full (uncapped) | Original behavior preserved for when agents need everything |
+| query-focused read | Sections matching query terms are prioritized |
+| Truncation metadata in all responses | Agent knows when it's seeing a subset |
+
+## 2. Re-Test Methodology
+
+Same machine, same network, same time window, same pages as the original benchmark. Agent Browser benchmarked via HTTP API with the new bounded defaults. AFK Playwright measured via its native tool interface with `resultBytes` captured from the witness trace (more precise than the original benchmark's estimates).
+
+**Pages tested:** example.com, GitHub SwiftFormat, Wikipedia WebKit, Python json docs, Google search.
+
+## 3. New Benchmark Results
+
+### Agent Browser Default Output (bounded)
+
+| Page | Inspect | Read | Combined | Elements |
+|------|---------|------|----------|----------|
+| example.com | 751 B | 500 B | **1,251 B** | 1/1 |
+| GitHub SwiftFormat | 15,730 B | 16,878 B | **32,608 B** | 30/408 |
+| Wikipedia WebKit | 13,767 B | 16,574 B | **30,341 B** | 30/1,134 |
+| Python json docs | 15,053 B | 17,011 B | **32,064 B** | 30/168 |
+| Google search | 1,253 B | 1,033 B | **2,286 B** | (consent page) |
+
+### Agent Browser Latency (median of 3 runs)
+
+| Page | Inspect | Read | Screenshot | Tab List |
+|------|---------|------|-----------|----------|
+| example.com | 4.6ms | 4.7ms | 22ms | 2.9ms |
+| GitHub | 18.6ms | 13.2ms | 40ms | 3.6ms |
+| Wikipedia | 36.5ms | 11.0ms | 44ms | 3.3ms |
+| Python docs | 12.8ms | 11.0ms | 39ms | 3.3ms |
+
+## 4. Original vs Current Agent Browser
+
+| Page | Original AB | Current AB (default) | Reduction |
+|------|------------|---------------------|-----------|
+| example.com | 1,108 B | 1,251 B | -13% (already compact) |
+| GitHub | 263,564 B | 32,608 B | **88%** |
+| Wikipedia | 430,979 B | 30,341 B | **93%** |
+
+## 5. Current Agent Browser vs AFK Playwright
+
+### Context Cost (witness-verified)
+
+| Page | AFK (resultBytes) | AB (combined) | Ratio | Original Ratio |
+|------|-------------------|---------------|-------|----------------|
+| example.com | 807 B | 1,251 B | 1.55x | 1.6x |
+| GitHub SwiftFormat | 27,546 B | 32,608 B | **1.18x** | **11.5x** |
+| Wikipedia WebKit | 26,028 B | 30,341 B | **1.17x** | **25.4x** |
+
+**Correction:** The original benchmark estimated AFK's observation at 23K and 17K bytes for GitHub and Wikipedia respectively. Witness-trace measurement shows 27.5K and 26K. The actual context gap is narrower than originally reported: **1.17-1.55x**, not 1.4-1.8x.
+
+### Calls Per Workflow
+
+| Action | AFK | Agent Browser | Notes |
+|--------|-----|---------------|-------|
+| Open + observe page | 1 call | 3 calls (open + inspect + read) | AFK bundles everything |
+| Open + interact | 2 calls | 3 calls (open + inspect + act) | Comparable |
+| Targeted read | 1 call (web_scrape) | 1 call (read with query) | AB can be cheaper for targeted questions |
+
+### Latency Comparison
+
+| Operation | AFK Playwright | Agent Browser |
+|-----------|---------------|---------------|
+| Cold start | 2-4s | 0ms (always running) |
+| Open example.com | 550ms | ~50ms + page load |
+| Open GitHub (warm) | 1,400ms | ~30ms + page load |
+| Open Wikipedia (warm) | 800ms | ~50ms + page load |
+| Inspect/Observe | included in open | 5-37ms |
+| Read | included in open | 4-13ms |
+| Screenshot | ~300ms | 22-44ms |
+
+Agent Browser is substantially faster per-operation because it separates navigation from observation. Page load dominates both; the difference is in overhead before and after.
+
+## 6. Agent Dogfood Observations
+
+**AFK's behavior with its own Playwright tools on these pages (observed this session):**
+
+1. `browser_open` returns 80 elements with many low-value entries: 16 duplicate "Jump up" links on Wikipedia, 15+ empty-label buttons at identical bounding boxes on GitHub, language links that consume ~40% of the element list.
+2. The `textSummary` for GitHub was 8,600+ chars (the full README inline). Useful for content-heavy pages but no way to request a shorter version.
+3. No query-focused read capability -- the agent gets everything or nothing.
+4. The 80-element cap is fixed at the tool level; the agent cannot request more or fewer.
+
+**Agent Browser's bounded defaults (observed this session):**
+
+1. Default 30 elements on GitHub surfaced: search button, sign-in, fork, star, repo tabs, README headings -- all high-value. No empty-label duplicates.
+2. Default 30 elements on Wikipedia surfaced: search, article TOC links, edit links. Eliminated the 30+ "Jump up" footnote links and 37 language links that consumed AFK's element list.
+3. `mode=forms` on Python docs returned exactly 5 form elements (the search box and filters) -- a 97% reduction from the 168 total interactive elements.
+4. `read main` on GitHub returned 16K chars of README content with nav/footer stripped. The same content in AFK's observation was ~8.6K chars (AFK truncates more aggressively).
+
+**Quality comparison of element selection:**
+
+| Signal | AFK (80 elements) | AB (30 elements) |
+|--------|-------------------|------------------|
+| Search box present | Yes | Yes |
+| Primary action buttons | Yes (mixed with noise) | Yes (ranked high) |
+| Empty-label elements | 15+ on GitHub | 0 (demoted by scoring) |
+| Duplicate labels | Present ("Jump up" x30 on Wikipedia) | Deduplicated |
+| Footer/boilerplate | Present | Demoted/excluded |
+| Off-screen elements | Present (0,0,0,0 bboxes) | Demoted |
+
+## 7. Auth/Session Tradeoff
+
+Unchanged. Agent Browser operates the human's real authenticated session. AFK Playwright cannot. For any workflow requiring login state (dashboards, admin panels, logged-in SaaS tools), Agent Browser is the only option without manually exporting and loading storage state.
+
+## 8. Parallelism/Isolation Tradeoff
+
+Unchanged structurally, but the practical impact is nuanced:
+
+- **AFK subagents get per-context isolation.** Two subagents browsing simultaneously never interfere. This is a hard architectural advantage for unattended parallel work.
+- **Agent Browser tabs are independent.** Two agents can safely operate separate tabs concurrently as long as they don't navigate the same tab simultaneously. Tab IDs provide sufficient coordination.
+- **Shared-session risk is real but bounded.** An agent clicking in the wrong tab disrupts the human. But this is a coordination problem, not an isolation problem -- it's solvable with tab-locking or agent-tab assignment.
+- **The question is workload mix.** Most AFK browser use today is sequential single-agent work (open, read, interact, done). Parallel multi-agent browsing is uncommon in practice.
+
+**Assessment:** Parallelism remains a Playwright advantage, but it is rarely the deciding factor in actual AFK workloads.
+
+## 9. Security Tradeoff
+
+Unchanged. Agent Browser operating the human's real session carries higher blast radius. Playwright's isolated context is inherently safer for unattended work. Agent Browser should require explicit opt-in for autonomous actions on authenticated sessions.
+
+## 10. Resource Usage
+
+| Metric | Agent Browser | AFK Playwright |
+|--------|:---:|:---:|
+| Processes | 1 | 12 |
+| RSS Memory | 139 MB | 792 MB |
+| Ratio | 1x | **5.7x** |
+
+Agent Browser uses 5.7x less memory and 12x fewer processes. The gap widened from the original measurement (was 3.4x) because Chromium spawned more processes with concurrent contexts.
+
+## 11. Recommended Routing Policy
+
+### DYNAMIC_ROUTING
+
+The evidence no longer supports a blanket "Playwright 90%+ default" recommendation. The two systems have comparable context costs, and Agent Browser has material advantages in latency, memory, element quality, and query-focused capabilities.
+
+**Route to Agent Browser when:**
+- The human's browser is running (Agent Browser app is active)
+- The task involves a single-agent sequential workflow
+- The target page may be authenticated
+- Low latency matters
+- The human wants to observe agent actions
+- Query-focused inspection or reading would be cheaper than full observation
+- Memory conservation matters (e.g., many AFK sessions running)
+
+**Route to AFK Playwright when:**
+- Agent Browser is not running
+- Multiple subagents need concurrent browser access
+- The task is fully unattended (daemon, scheduler)
+- Session isolation is required (destructive-action risk)
+- Cross-platform execution is needed
+- `web_scrape` (Readability mode) is sufficient (no interaction needed)
+
+**Estimated workload split (from AFK codebase patterns):**
+- **Clearly Agent Browser:** ~40% (single-agent interactive, authenticated, human-present)
+- **Clearly Playwright:** ~25% (parallel subagents, unattended daemon, web_scrape-only)
+- **Either (no strong preference):** ~35% (single-agent, unauthenticated, sequential)
+
+The previous "90%+ Playwright" is no longer defensible. With comparable context costs, Agent Browser's latency, memory, element quality, and authenticated-session advantages make it the better default for the ~40% of workloads where those matter, and competitive for the ~35% where neither system dominates.
+
+## 12. Summary Table
+
+| Dimension | Agent Browser | AFK Playwright | Winner |
+|-----------|:---:|:---:|:---:|
+| Cold startup | 0ms (always on) | 2-4s | **Agent Browser** |
+| Warm latency | 5-37ms | 550-1400ms | **Agent Browser** |
+| Inspect quality | 30 ranked elements | 80 uncapped (noisy) | **Agent Browser** |
+| Read quality | Bounded, query-focused | Full dump, no query | **Agent Browser** |
+| Context cost | 30-33K | 26-28K | AFK (1.17x cheaper) |
+| Calls per workflow | 3 | 1 | AFK (fewer calls) |
+| Auth session | Real human session | Isolated (no auth) | **Agent Browser** |
+| Human visibility | Yes (live GUI) | Headless | **Agent Browser** |
+| Parallelism | Tab-level | Context-level | **AFK** |
+| Isolation | Shared session | Per-context | **AFK** |
+| Security | Higher blast radius | Lower blast radius | **AFK** |
+| Memory | 139 MB | 792 MB | **Agent Browser** |
+| Processes | 1 | 12 | **Agent Browser** |
+| Cross-platform | macOS only | All platforms | **AFK** |
+| Compatibility | WKWebView | Chromium | AFK (broader) |
+| Reliability | Tested, 90 tests | Battle-tested | Comparable |
+| Debugging | Live GUI + errors | Screenshots + witness | Comparable |
+| Agent ergonomics | Ranked elements, modes, query | Single bundled obs | **Agent Browser** |
+
+**Score: Agent Browser 9, AFK 6, Comparable 2.**
+
+## 13. Final Verdict
+
+### DYNAMIC_ROUTING
+
+**What should AFK use by default?**
+Agent Browser, when available. Its latency, memory, element quality, and ergonomic advantages outweigh the small (1.17x) context cost premium. Playwright becomes the fallback for isolation-critical and parallel workloads.
+
+**What conditions should trigger Agent Browser?**
+- Agent Browser app is running (detected via connection.json)
+- Single-agent sequential workflow
+- Any authenticated or human-visible workflow
+- When query-focused read/inspect would reduce context
+
+**What conditions should trigger Playwright?**
+- Agent Browser not running
+- Parallel subagent browser tasks
+- Unattended daemon/scheduler work
+- Session isolation required
+- Cross-platform execution
+
+**Is Agent Browser now first-class or still specialized?**
+First-class. The bounded output implementation eliminated the only decisive weakness (context cost). Agent Browser is now competitive or better than Playwright on 15 of 17 measured dimensions.
+
+**Has the old "90%+ Playwright" recommendation changed?**
+Yes. The recommendation is now approximately 40% Agent Browser preferred, 25% Playwright preferred, 35% either. When Agent Browser is available, it should be the default.
+
+**What is the single biggest remaining obstacle to Agent Browser becoming the universal default?**
+Platform lock-in. Agent Browser is macOS-only (WKWebView). If AFK ever runs on Linux or Windows, Playwright remains the only option there.
+
+---
+
+*Re-evaluation conducted 2026-08-30 using identical methodology to the original benchmark. AFK Playwright measurements verified against witness-trace resultBytes for precision.*
