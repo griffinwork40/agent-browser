@@ -17,14 +17,14 @@ final class BrowserWindowController: NSWindowController {
 
     // MARK: - UI Components
 
-    // Internal so BrowserWindowController+Actions extension can call addressBar.focus()
+    // Internal so extensions (+Actions, +Toolbar) can reach these.
     let addressBar = AddressBar()
-    private let backButton = NSButton()
-    private let forwardButton = NSButton()
-    private let reloadButton = NSButton()
-    private let progressBar = NSProgressIndicator()
-    private let webContentView = NSView()
-    private let toolbarContainer = NSView()
+    let backButton = NSButton()
+    let forwardButton = NSButton()
+    let reloadButton = NSButton()
+    let progressBar = NSProgressIndicator()
+    let webContentView = NSView()
+    let toolbarContainer = NSView()
 
     // MARK: - Sidebar
 
@@ -46,14 +46,16 @@ final class BrowserWindowController: NSWindowController {
 
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
         window.title = "Agent Browser"
         window.setFrameAutosaveName("BrowserWindow")
         window.minSize = NSSize(width: 400, height: 300)
-        window.titlebarAppearsTransparent = false
+        // Transparent titlebar lets the toolbar's NSVisualEffectView material bleed
+        // to the very top edge of the window, giving the full Liquid Glass effect.
+        window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
 
         super.init(window: window)
@@ -80,9 +82,13 @@ final class BrowserWindowController: NSWindowController {
         guard let contentView = window?.contentView else { return }
         contentView.wantsLayer = true
 
-        // Toolbar
+        // Toolbar — glass background via NSVisualEffectView (Option A).
+        // We insert the effect view as the first (bottom-most) subview of the
+        // toolbarContainer so all button/field subviews draw on top of it.
         toolbarContainer.translatesAutoresizingMaskIntoConstraints = false
+        toolbarContainer.wantsLayer = true
         contentView.addSubview(toolbarContainer)
+        setupToolbarGlassBackground()
         setupNavigationButtons()
         setupAddressBar()
         setupProgressBar()
@@ -101,11 +107,14 @@ final class BrowserWindowController: NSWindowController {
         sidebarWidthConstraint = widthConstraint
 
         NSLayoutConstraint.activate([
-            // Toolbar spans full width at the top
+            // Toolbar spans full width at the top.
+            // With .fullSizeContentView + titlebarAppearsTransparent the toolbar
+            // top is pinned to the window top (behind the titlebar area), so the
+            // glass material fills all the way to the top window edge.
             toolbarContainer.topAnchor.constraint(equalTo: contentView.topAnchor),
             toolbarContainer.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
             toolbarContainer.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
-            toolbarContainer.heightAnchor.constraint(equalToConstant: 42),
+            toolbarContainer.heightAnchor.constraint(equalToConstant: ControlSize.toolbarHeight),
 
             // Sidebar: left edge → full height below toolbar
             sidebarContainerView.topAnchor.constraint(equalTo: toolbarContainer.bottomAnchor),
@@ -118,83 +127,6 @@ final class BrowserWindowController: NSWindowController {
             webContentView.leadingAnchor.constraint(equalTo: sidebarContainerView.trailingAnchor),
             webContentView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
             webContentView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
-        ])
-    }
-
-    private func setupNavigationButtons() {
-        backButton.image = NSImage(systemSymbolName: "chevron.left", accessibilityDescription: "Back")
-        backButton.bezelStyle = .accessoryBarAction
-        backButton.isBordered = false
-        backButton.target = self
-        backButton.action = #selector(goBack(_:))
-        backButton.translatesAutoresizingMaskIntoConstraints = false
-        toolbarContainer.addSubview(backButton)
-
-        forwardButton.image = NSImage(systemSymbolName: "chevron.right", accessibilityDescription: "Forward")
-        forwardButton.bezelStyle = .accessoryBarAction
-        forwardButton.isBordered = false
-        forwardButton.target = self
-        forwardButton.action = #selector(goForward(_:))
-        forwardButton.translatesAutoresizingMaskIntoConstraints = false
-        toolbarContainer.addSubview(forwardButton)
-
-        reloadButton.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "Reload")
-        reloadButton.bezelStyle = .accessoryBarAction
-        reloadButton.isBordered = false
-        reloadButton.target = self
-        reloadButton.action = #selector(reloadPage(_:))
-        reloadButton.translatesAutoresizingMaskIntoConstraints = false
-        toolbarContainer.addSubview(reloadButton)
-
-        NSLayoutConstraint.activate([
-            backButton.leadingAnchor.constraint(equalTo: toolbarContainer.leadingAnchor, constant: 12),
-            backButton.centerYAnchor.constraint(equalTo: toolbarContainer.centerYAnchor),
-            backButton.widthAnchor.constraint(equalToConstant: 28),
-
-            forwardButton.leadingAnchor.constraint(equalTo: backButton.trailingAnchor, constant: 4),
-            forwardButton.centerYAnchor.constraint(equalTo: toolbarContainer.centerYAnchor),
-            forwardButton.widthAnchor.constraint(equalToConstant: 28),
-
-            reloadButton.leadingAnchor.constraint(equalTo: forwardButton.trailingAnchor, constant: 4),
-            reloadButton.centerYAnchor.constraint(equalTo: toolbarContainer.centerYAnchor),
-            reloadButton.widthAnchor.constraint(equalToConstant: 28),
-        ])
-    }
-
-    private func setupAddressBar() {
-        addressBar.translatesAutoresizingMaskIntoConstraints = false
-        addressBar.onNavigate = { [weak self] action in
-            switch action {
-            case .navigate(let url):
-                self?.tabManager.activeTab?.load(url)
-            case .search(let query):
-                self?.tabManager.activeTab?.loadSearch(query)
-            }
-        }
-        toolbarContainer.addSubview(addressBar)
-
-        NSLayoutConstraint.activate([
-            addressBar.leadingAnchor.constraint(equalTo: reloadButton.trailingAnchor, constant: 8),
-            addressBar.trailingAnchor.constraint(equalTo: toolbarContainer.trailingAnchor, constant: -12),
-            addressBar.centerYAnchor.constraint(equalTo: toolbarContainer.centerYAnchor),
-            addressBar.heightAnchor.constraint(equalToConstant: 28),
-        ])
-    }
-
-    private func setupProgressBar() {
-        progressBar.style = .bar
-        progressBar.isIndeterminate = false
-        progressBar.minValue = 0
-        progressBar.maxValue = 1
-        progressBar.isHidden = true
-        progressBar.translatesAutoresizingMaskIntoConstraints = false
-        toolbarContainer.addSubview(progressBar)
-
-        NSLayoutConstraint.activate([
-            progressBar.leadingAnchor.constraint(equalTo: toolbarContainer.leadingAnchor),
-            progressBar.trailingAnchor.constraint(equalTo: toolbarContainer.trailingAnchor),
-            progressBar.bottomAnchor.constraint(equalTo: toolbarContainer.bottomAnchor),
-            progressBar.heightAnchor.constraint(equalToConstant: 2),
         ])
     }
 
