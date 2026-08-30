@@ -115,8 +115,7 @@ extension BrowserWindowController {
         guard profiles.count > 1 else { return }
         guard let currentIndex = profiles.firstIndex(where: { $0.id == profileManager.activeProfileID }) else { return }
         let nextIndex = (currentIndex + 1) % profiles.count
-        profileManager.switchTo(profileID: profiles[nextIndex].id)
-        updateSidebar()
+        performProfileSwitch(to: profiles[nextIndex].id)
     }
 
     @objc func switchToPreviousProfile(_ sender: Any?) {
@@ -124,8 +123,7 @@ extension BrowserWindowController {
         guard profiles.count > 1 else { return }
         guard let currentIndex = profiles.firstIndex(where: { $0.id == profileManager.activeProfileID }) else { return }
         let prevIndex = (currentIndex - 1 + profiles.count) % profiles.count
-        profileManager.switchTo(profileID: profiles[prevIndex].id)
-        updateSidebar()
+        performProfileSwitch(to: profiles[prevIndex].id)
     }
 
     @objc func createNewProfile(_ sender: Any?) {

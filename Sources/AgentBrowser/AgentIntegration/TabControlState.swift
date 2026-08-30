@@ -47,6 +47,7 @@ final class TabControlState: Identifiable {
         guard state == .agentActive || state == .interrupting else { return }
         if state == .interrupting {
             // Was interrupted; hand off to human
+            interruptTrigger = nil
             transition(to: .humanOwns)
         } else {
             activeAgentID = nil

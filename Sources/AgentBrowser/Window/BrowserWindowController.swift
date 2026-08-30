@@ -158,6 +158,21 @@ final class BrowserWindowController: NSWindowController {
         sidebarHostingController?.rootView = makeSidebarView()
     }
 
+    /// Switches to the given profile, closing all existing tabs and opening
+    /// a fresh tab bound to the new profile's WKWebsiteDataStore.
+    func performProfileSwitch(to profileID: UUID) {
+        profileManager.switchTo(profileID: profileID)
+        let existing = tabManager.tabs
+        let newTab = tabManager.createTab(profileID: profileID)
+        tabManager.select(tab: newTab)
+        for tab in existing {
+            tabManager.closeTab(tab)
+        }
+        tabManager.clearClosedTabStack()
+        syncDisplayedTab()
+        updateSidebar()
+    }
+
     private func makeSidebarView() -> TabSidebarView {
         // Build profileID → colorName map from the live profiles list
         let profileColors: [UUID: String] = Dictionary(
@@ -193,23 +208,7 @@ final class BrowserWindowController: NSWindowController {
             activeProfileID: profileManager.activeProfileID,
             onSwitchProfile: { [weak self] id in
                 guard let self else { return }
-                self.profileManager.switchTo(profileID: id)
-                // Close all existing tabs so they don't retain the old profile's
-                // WKWebsiteDataStore. Tabs created before the switch keep their
-                // original data store reference; the only safe approach is to
-                // close them and open a fresh tab bound to the new profile.
-                // Limitation: unsaved form data / scroll positions are lost.
-                let existing = self.tabManager.tabs
-                let newTab = self.tabManager.createTab(profileID: id)
-                self.tabManager.select(tab: newTab)
-                for tab in existing {
-                    self.tabManager.closeTab(tab)
-                }
-                // Purge the closed-tab history so Cmd+Shift+T cannot reopen
-                // tabs from the previous profile after a switch.
-                self.tabManager.clearClosedTabStack()
-                self.syncDisplayedTab()
-                self.updateSidebar()
+                self.performProfileSwitch(to: id)
             },
             onCreateProfile: { [weak self] in
                 guard let self else { return }
