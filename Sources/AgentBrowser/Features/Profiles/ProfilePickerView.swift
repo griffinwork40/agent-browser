@@ -40,30 +40,31 @@ struct ProfilePickerView: View {
                 isExpanded.toggle()
             }
         } label: {
-            HStack(spacing: Spacing.px8) {
-                if let profile = activeProfile {
-                    avatarCircle(for: profile, size: 22)
-                    Text(profile.name)
-                        .font(.system(size: 13, weight: .medium))
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                } else {
-                    Image(systemName: "person.circle")
-                        .foregroundStyle(.secondary)
-                    Text("No Profile")
-                        .font(Typography.body)
+            GlassSurface(material: .ultraThinMaterial, radius: Radius.small) {
+                HStack(spacing: Spacing.px8) {
+                    if let profile = activeProfile {
+                        avatarCircle(for: profile, size: 22)
+                        Text(profile.name)
+                            .font(.system(size: 13, weight: .medium))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    } else {
+                        Image(systemName: "person.circle")
+                            .foregroundStyle(.secondary)
+                        Text("No Profile")
+                            .font(Typography.body)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Spacer(minLength: Spacing.px4)
+
+                    Image(systemName: isExpanded ? "chevron.down" : "chevron.up")
+                        .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(.secondary)
                 }
-
-                Spacer(minLength: Spacing.px4)
-
-                Image(systemName: isExpanded ? "chevron.down" : "chevron.up")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.secondary)
+                .padding(.horizontal, Spacing.px8)
+                .frame(height: ControlSize.tabRowHeight)
             }
-            .padding(.horizontal, Spacing.px8)
-            .frame(height: ControlSize.tabRowHeight)
-            .background(Color.primary.opacity(Opacity.subtle), in: .rect(cornerRadius: Radius.small))
         }
         .buttonStyle(.plain)
         .accessibilityLabel(activeProfile.map { "Active profile: \($0.name)" } ?? "Profile picker")

@@ -47,8 +47,26 @@ final class AddressBar: NSTextField {
 
     private var isSecure: Bool = false
 
-    /// The raw URL being displayed (without the prepended lock emoji).
+    /// The raw URL being displayed (without the security prefix).
     private var rawURL: String = ""
+
+    /// Attributed-string prefix shown when a page is HTTPS. Uses an SF Symbol
+    /// image attachment so we avoid emoji rendering inconsistencies.
+    private static let lockAttachment: NSAttributedString = {
+        // Build a small lock.fill symbol at caption size, tinted with the system
+        // secondary label color so it adapts to light/dark mode automatically.
+        let config = NSImage.SymbolConfiguration(pointSize: 11, weight: .regular)
+        let image = NSImage(systemSymbolName: "lock.fill", accessibilityDescription: "Secure")?
+            .withSymbolConfiguration(config) ?? NSImage()
+        let attachment = NSTextAttachment()
+        attachment.image = image
+        // Baseline-align the icon with the text descender so it sits flush.
+        attachment.bounds = CGRect(x: 0, y: -2, width: 12, height: 12)
+        let str = NSMutableAttributedString(attachment: attachment)
+        // Space after the icon
+        str.append(NSAttributedString(string: "  "))
+        return str
+    }()
 
     // MARK: - Debounce
 
@@ -83,8 +101,8 @@ final class AddressBar: NSTextField {
 
     @objc private func handleAction() {
         let text = stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        // Strip the lock-emoji prefix if present (user may have pressed Return
-        // while the display value is still showing it)
+        // Strip the lock-icon prefix if present (user may have pressed Return
+        // while the display value is still showing the attributed prefix)
         let clean = stripLockPrefix(text)
         guard !clean.isEmpty else { return }
         let action = NavigationAction.classify(clean)
@@ -110,21 +128,43 @@ final class AddressBar: NSTextField {
         }
     }
 
-    /// Apply the correct display string (with or without lock prefix).
+    /// Apply the correct display string (with or without SF Symbol lock prefix).
     private func applyDisplay() {
         if isSecure && !rawURL.isEmpty {
-            stringValue = "🔒 \(rawURL)"
-            textColor = .labelColor
+            // Build an attributed string: [lock-icon + space] + URL
+            let full = NSMutableAttributedString(attributedString: Self.lockAttachment)
+            full.append(NSAttributedString(
+                string: rawURL,
+                attributes: [
+                    .font: NSFont.systemFont(ofSize: 13),
+                    .foregroundColor: NSColor.labelColor,
+                ]
+            ))
+            attributedStringValue = full
         } else {
             stringValue = rawURL
             textColor = .labelColor
         }
     }
 
-    /// Strip the leading lock-emoji prefix if present, returning the bare URL/query.
+    /// Strip the leading lock attachment (up to and including the trailing spaces)
+    /// from a string, returning the bare URL. The attachment renders as a Unicode
+    /// object-replacement character (U+FFFC) in the plain string value.
     private func stripLockPrefix(_ s: String) -> String {
-        let prefix = "🔒 "
-        return s.hasPrefix(prefix) ? String(s.dropFirst(prefix.count)) : s
+        // NSTextAttachment is represented as U+FFFC in the plain string.
+        // Our prefix is: U+FFFC + "  " (two spaces) — strip all of that.
+        let attachmentChar = "\u{FFFC}"
+        if s.hasPrefix(attachmentChar) {
+            var stripped = String(s.dropFirst())      // remove U+FFFC
+            while stripped.hasPrefix(" ") {
+                stripped = String(stripped.dropFirst())
+            }
+            return stripped
+        }
+        // Fallback: also handle the legacy emoji prefix in case any stale value slips through
+        let legacyPrefix = "🔒 "
+        if s.hasPrefix(legacyPrefix) { return String(s.dropFirst(legacyPrefix.count)) }
+        return s
     }
 
     // MARK: - Focus helpers
@@ -138,7 +178,7 @@ final class AddressBar: NSTextField {
     override func becomeFirstResponder() -> Bool {
         let result = super.becomeFirstResponder()
         if result {
-            // Show raw URL (no emoji) while editing
+            // Show raw URL (no lock icon) while editing
             if !rawURL.isEmpty {
                 stringValue = rawURL
             }
