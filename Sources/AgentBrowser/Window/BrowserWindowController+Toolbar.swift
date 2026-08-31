@@ -69,6 +69,27 @@ extension BrowserWindowController {
         ])
     }
 
+    func setupSidebarToggle() {
+        sidebarToggleButton.image = NSImage(
+            systemSymbolName: "sidebar.right",
+            accessibilityDescription: "Toggle Sidebar"
+        )
+        sidebarToggleButton.bezelStyle = .accessoryBarAction
+        sidebarToggleButton.isBordered = false
+        sidebarToggleButton.target = self
+        sidebarToggleButton.action = #selector(toggleSidebar(_:))
+        sidebarToggleButton.translatesAutoresizingMaskIntoConstraints = false
+        toolbarContainer.addSubview(sidebarToggleButton)
+
+        NSLayoutConstraint.activate([
+            sidebarToggleButton.trailingAnchor.constraint(
+                equalTo: toolbarContainer.trailingAnchor, constant: -Spacing.px12
+            ),
+            sidebarToggleButton.centerYAnchor.constraint(equalTo: toolbarContainer.centerYAnchor),
+            sidebarToggleButton.widthAnchor.constraint(equalToConstant: ControlSize.iconButtonRegular),
+        ])
+    }
+
     func setupAddressBar() {
         addressBar.translatesAutoresizingMaskIntoConstraints = false
         addressBar.onNavigate = { [weak self] action in
@@ -83,7 +104,9 @@ extension BrowserWindowController {
 
         NSLayoutConstraint.activate([
             addressBar.leadingAnchor.constraint(equalTo: reloadButton.trailingAnchor, constant: Spacing.px8),
-            addressBar.trailingAnchor.constraint(equalTo: toolbarContainer.trailingAnchor, constant: -Spacing.px12),
+            addressBar.trailingAnchor.constraint(
+                equalTo: sidebarToggleButton.leadingAnchor, constant: -Spacing.px8
+            ),
             addressBar.centerYAnchor.constraint(equalTo: toolbarContainer.centerYAnchor),
             addressBar.heightAnchor.constraint(equalToConstant: 28),
         ])
