@@ -207,8 +207,8 @@ extension BrowserAutomationService {
         }
 
         const passkeyHeadings = [
-            'use your passkey', 'passkey', 'security key',
-            'confirm it', 'verify it'  // Google: "confirm it's really you"
+            'use your passkey', 'sign in with a passkey', 'security key',
+            "confirm it's really you", "verify it's you"  // Google passkey prompts
         ];
         for (const h of headings) {
             const text = (h.textContent || '').toLowerCase().trim();
@@ -220,7 +220,7 @@ extension BrowserAutomationService {
 
         // Passkey-related button or link text (e.g. "Use a passkey", "Continue" on passkey pages)
         const passkeyButtonTexts = ['use a passkey', 'use passkey', 'sign in with passkey',
-            'use your passkey', 'use a security key', 'try another way'];
+            'use your passkey', 'use a security key'];
         const allButtons = document.querySelectorAll('button, a[role="button"], [role="link"]');
         for (const btn of allButtons) {
             const text = (btn.textContent || '').toLowerCase().trim();

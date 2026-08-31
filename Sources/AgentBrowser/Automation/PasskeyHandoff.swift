@@ -43,12 +43,13 @@ extension BrowserAutomationService {
             return
         }
 
-        takeoverHandler.requestAuth(tabID: tab.id)
+        let sanitizedReason = HandoffResult.sanitize(reason)
+        takeoverHandler.requestAuth(tabID: tab.id, reason: sanitizedReason)
         completion(.success(HandoffResult(
             ok: true,
             tabId: tabId,
             state: "awaiting_auth",
-            reason: reason,
+            reason: sanitizedReason,
             message: "Agent paused. Human should complete authentication "
                 + "in the browser, then call browser_auth_completed."
         )))
@@ -72,12 +73,13 @@ extension BrowserAutomationService {
             )
         }
 
-        takeoverHandler.requestAuth(tabID: tab.id)
+        let sanitizedReason = HandoffResult.sanitize(reason)
+        takeoverHandler.requestAuth(tabID: tab.id, reason: sanitizedReason)
         return .success(HandoffResult(
             ok: true,
             tabId: tabId,
             state: "awaiting_auth",
-            reason: reason,
+            reason: sanitizedReason,
             message: "Agent paused. Human should complete authentication "
                 + "in the browser, then call browser_auth_completed."
         ))
@@ -175,6 +177,15 @@ struct HandoffResult: Codable, Sendable {
     let state: String
     let reason: String?
     let message: String
+
+    /// Sanitize a reason string: truncate to maxLength grapheme clusters and
+    /// strip ASCII control characters. Mirrors AuthStatusResult.sanitize.
+    static func sanitize(_ raw: String?, maxLength: Int = 256) -> String? {
+        guard let raw else { return nil }
+        let truncated = raw.count > maxLength ? String(raw.prefix(maxLength)) : raw
+        return truncated.unicodeScalars.filter { $0.value >= 0x20 }
+            .reduce(into: "") { $0 += String($1) }
+    }
 }
 
 struct HandoffStatusResult: Codable, Sendable {

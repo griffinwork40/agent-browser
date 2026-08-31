@@ -76,8 +76,8 @@ final class TakeoverHandler {
 
     /// Transition a tab to awaitingAuth state.
     /// Agent pauses and the human completes the auth flow in the live browser.
-    func requestAuth(tabID: UUID) {
-        controlState(for: tabID).awaitAuth()
+    func requestAuth(tabID: UUID, reason: String? = nil) {
+        controlState(for: tabID).awaitAuth(reason: reason)
     }
 
     /// Human completed authentication; resume agent on this tab.

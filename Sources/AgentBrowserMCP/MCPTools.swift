@@ -131,6 +131,13 @@ struct MCPTools {
                     "tab_id": prop("string", "Tab ID from browser_tabs")
                  ],
                  required: ["tab_id"]),
+
+            tool("browser_handoff_status",
+                 desc: "Check the auth handoff state for a tab. Returns the current control state, the active agent ID (if any), and the auth reason (if awaiting_auth). Use to poll whether the human has completed authentication after browser_request_auth was called.",
+                 props: [
+                    "tab_id": prop("string", "Tab ID from browser_tabs")
+                 ],
+                 required: ["tab_id"]),
         ]
     }
 
@@ -230,6 +237,12 @@ struct MCPTools {
                 return toolError("Missing required argument: tab_id")
             }
             return callBrowser(method: "auth.completeHandoff", params: ["id": tabId])
+
+        case "browser_handoff_status":
+            guard let tabId = args["tab_id"] as? String else {
+                return toolError("Missing required argument: tab_id")
+            }
+            return callBrowser(method: "auth.handoffStatus", params: ["id": tabId])
 
         default:
             return toolError("Unknown tool: \(name)")

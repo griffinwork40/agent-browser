@@ -11,7 +11,7 @@ import WebKit
 @MainActor
 final class BrowserAutomationService {
     private let tabManager: TabManager
-    let takeoverHandler: TakeoverHandler
+    private(set) var takeoverHandler: TakeoverHandler
 
     init(tabManager: TabManager, takeoverHandler: TakeoverHandler) {
         self.tabManager = tabManager
