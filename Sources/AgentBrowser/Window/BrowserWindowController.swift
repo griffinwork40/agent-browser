@@ -11,6 +11,8 @@ final class BrowserWindowController: NSWindowController {
 
     let tabManager: TabManager
     let profileManager: ProfileManager
+    let activityStore: AgentActivityStore
+    let takeoverHandler: TakeoverHandler
 
     /// Track which tab is currently displayed in the view hierarchy.
     private var displayedTabID: UUID?
@@ -35,15 +37,27 @@ final class BrowserWindowController: NSWindowController {
     /// Stored so we can zero/restore it on toggle.
     private var sidebarWidthConstraint: NSLayoutConstraint?
 
+    // MARK: - Agent Status Banner
+
+    private let bannerContainerView = NSView()
+    private var bannerController: ControlStatusBannerController?
+
     // MARK: - KVO
 
     private var progressObservation: NSKeyValueObservation?
 
     // MARK: - Init
 
-    init(tabManager: TabManager, profileManager: ProfileManager) {
+    init(
+        tabManager: TabManager,
+        profileManager: ProfileManager,
+        activityStore: AgentActivityStore,
+        takeoverHandler: TakeoverHandler
+    ) {
         self.tabManager = tabManager
         self.profileManager = profileManager
+        self.activityStore = activityStore
+        self.takeoverHandler = takeoverHandler
 
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800),
@@ -62,11 +76,13 @@ final class BrowserWindowController: NSWindowController {
         super.init(window: window)
         setupLayout()
         setupSidebar()
+        setupBanner()
 
         // Sync display whenever TabManager selection changes (from UI or automation)
         tabManager.onSelectionChanged = { [weak self] in
             self?.syncDisplayedTab()
             self?.updateSidebar()
+            self?.bannerController?.update(activeTabID: self?.tabManager.activeTab?.id)
         }
 
         // Create first tab
@@ -95,6 +111,11 @@ final class BrowserWindowController: NSWindowController {
         setupAddressBar()
         setupProgressBar()
 
+        // Agent status banner — sits between toolbar and web content; zero-height when idle.
+        // setupBanner() populates bannerContainerView after super.init completes.
+        bannerContainerView.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(bannerContainerView)
+
         // Web content area — fills everything to the left of the sidebar
         webContentView.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(webContentView)
@@ -120,14 +141,19 @@ final class BrowserWindowController: NSWindowController {
             toolbarContainer.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
             toolbarContainer.heightAnchor.constraint(equalToConstant: ControlSize.toolbarHeight),
 
+            // Banner: full width, directly below toolbar; intrinsic height from SwiftUI
+            bannerContainerView.topAnchor.constraint(equalTo: toolbarContainer.bottomAnchor),
+            bannerContainerView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            bannerContainerView.trailingAnchor.constraint(equalTo: sidebarContainerView.leadingAnchor),
+
             // Sidebar: right edge, full height below toolbar
             sidebarContainerView.topAnchor.constraint(equalTo: toolbarContainer.bottomAnchor),
             sidebarContainerView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
             sidebarContainerView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
             widthConstraint,
 
-            // Web content: fills remainder to the left of sidebar
-            webContentView.topAnchor.constraint(equalTo: toolbarContainer.bottomAnchor),
+            // Web content: fills remainder to the left of sidebar, below banner
+            webContentView.topAnchor.constraint(equalTo: bannerContainerView.bottomAnchor),
             webContentView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
             webContentView.trailingAnchor.constraint(equalTo: sidebarContainerView.leadingAnchor),
             webContentView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
@@ -218,8 +244,31 @@ final class BrowserWindowController: NSWindowController {
                 guard let self else { return }
                 self.profileManager.createProfile(name: "New Profile")
                 self.updateSidebar()
-            }
+            },
+            activityStore: activityStore
         )
+    }
+
+    // MARK: - Agent Status Banner
+
+    /// Creates and embeds the ControlStatusBannerController into bannerContainerView.
+    /// Called once from init after setupLayout().
+    private func setupBanner() {
+        let bc = ControlStatusBannerController(
+            activityStore: activityStore,
+            takeoverHandler: takeoverHandler
+        )
+        bannerController = bc
+
+        let bannerHostingView = bc.hostingView
+        bannerHostingView.translatesAutoresizingMaskIntoConstraints = false
+        bannerContainerView.addSubview(bannerHostingView)
+        NSLayoutConstraint.activate([
+            bannerHostingView.topAnchor.constraint(equalTo: bannerContainerView.topAnchor),
+            bannerHostingView.bottomAnchor.constraint(equalTo: bannerContainerView.bottomAnchor),
+            bannerHostingView.leadingAnchor.constraint(equalTo: bannerContainerView.leadingAnchor),
+            bannerHostingView.trailingAnchor.constraint(equalTo: bannerContainerView.trailingAnchor),
+        ])
     }
 
     // MARK: - Sidebar Toggle

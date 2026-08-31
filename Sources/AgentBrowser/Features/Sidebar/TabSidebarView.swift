@@ -20,6 +20,9 @@ struct TabSidebarView: View {
     let onSwitchProfile: (UUID) -> Void
     let onCreateProfile: () -> Void
 
+    /// Shared store threaded in from BrowserWindowController.
+    let activityStore: AgentActivityStore
+
     var body: some View {
         // GlassSurface with radius:0 because the sidebar is flush to the window
         // edge. It also handles Reduce Transparency by falling back to an opaque
@@ -67,6 +70,7 @@ struct TabSidebarView: View {
             }
             .frame(width: ControlSize.sidebarWidth)
         }
+        .environment(activityStore)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Tab Sidebar")
     }

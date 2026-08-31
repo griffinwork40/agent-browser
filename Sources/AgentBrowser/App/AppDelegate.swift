@@ -8,6 +8,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // Initialized in applicationDidFinishLaunching (already on main thread).
     private var profileManager: ProfileManager?
     private var tabManager: TabManager?
+    private var activityStore: AgentActivityStore?
+    private var takeoverHandler: TakeoverHandler?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupMainMenu()
@@ -18,14 +20,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let tm = TabManager(profileManager: pm)
         self.tabManager = tm
 
+        let store = AgentActivityStore()
+        self.activityStore = store
+
+        let handler = TakeoverHandler()
+        self.takeoverHandler = handler
+
         // Create the browser window
-        windowController = BrowserWindowController(tabManager: tm, profileManager: pm)
+        windowController = BrowserWindowController(
+            tabManager: tm,
+            profileManager: pm,
+            activityStore: store,
+            takeoverHandler: handler
+        )
         windowController?.showWindow(nil)
 
         // Start the agent automation server
         let automationService = BrowserAutomationService(
             tabManager: tm,
-            takeoverHandler: TakeoverHandler()
+            takeoverHandler: handler
         )
         agentServer = AgentHTTPServer(automationService: automationService)
         agentServer?.start()

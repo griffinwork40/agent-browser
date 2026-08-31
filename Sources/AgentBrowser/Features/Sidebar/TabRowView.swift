@@ -1,6 +1,7 @@
 // TabRowView.swift
 // A single tab row in the sidebar. Uses DesignSystem tokens throughout.
 // Renders: favicon circle, title + host, hover-revealed close button.
+// Agent-aware: shows AgentIndicator (left border) and ProvenanceBadge (by favicon).
 
 import SwiftUI
 
@@ -12,44 +13,54 @@ struct TabRowView: View {
     let onSelect: () -> Void
     let onClose: () -> Void
 
+    @Environment(AgentActivityStore.self) private var activityStore
     @State private var isHovered = false
 
     var body: some View {
         Button(action: onSelect) {
-            HStack(spacing: Spacing.px8) {
-                faviconView
+            HStack(spacing: 0) {
+                // 3px agent-state border on the left edge
+                AgentIndicator(
+                    state: agentActivityState,
+                    agentColorIndex: agentColorIndex
+                )
+                .frame(height: ControlSize.tabRowHeight)
 
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(tab.title)
-                        .font(Typography.body)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
+                HStack(spacing: Spacing.px8) {
+                    faviconView
 
-                    if let host = tab.url?.host {
-                        Text(host)
-                            .font(Typography.caption)
-                            .foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(tab.title)
+                            .font(Typography.body)
                             .lineLimit(1)
-                            .truncationMode(.middle)
+                            .truncationMode(.tail)
+
+                        if let host = tab.url?.host {
+                            Text(host)
+                                .font(Typography.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                    }
+
+                    Spacer(minLength: Spacing.px4)
+
+                    // Close button appears on hover or when row is selected
+                    if isHovered || isSelected {
+                        IconButton(
+                            systemImage: "xmark",
+                            label: "Close tab",
+                            size: ControlSize.iconButtonSmall,
+                            action: onClose
+                        )
+                        .transition(.opacity)
                     }
                 }
-
-                Spacer(minLength: Spacing.px4)
-
-                // Close button appears on hover or when row is selected
-                if isHovered || isSelected {
-                    IconButton(
-                        systemImage: "xmark",
-                        label: "Close tab",
-                        size: ControlSize.iconButtonSmall,
-                        action: onClose
-                    )
-                    .transition(.opacity)
-                }
+                .padding(.horizontal, Spacing.px8)
+                .padding(.vertical, Spacing.px6)
+                .frame(height: ControlSize.tabRowHeight)
             }
-            .padding(.horizontal, Spacing.px8)
-            .padding(.vertical, Spacing.px6)
-            .frame(height: ControlSize.tabRowHeight)
             .background(rowBackground, in: .rect(cornerRadius: Radius.small))
         }
         .buttonStyle(.plain)
@@ -64,36 +75,53 @@ struct TabRowView: View {
         .animation(.easeInOut(duration: Motion.micro), value: isSelected)
     }
 
+    // MARK: - Agent state helpers
+
+    private var agentActivityState: AgentActivityState {
+        let tabID = tab.id
+        guard activityStore.isTabAgentControlled(tabID) else { return .idle }
+        return .working
+    }
+
+    private var agentColorIndex: Int {
+        activityStore.activeAgentForTab(tab.id)?.colorIndex ?? 0
+    }
+
     // MARK: - Favicon
 
     /// Colored circle with the first letter of the domain.
     /// Shows a spinner while loading; will be replaced with real favicon loading later.
     /// When `profileColorName` is set, a 1.5pt colored ring is drawn around the circle.
+    /// A ProvenanceBadge is shown next to the circle for agent-created tabs.
     private var faviconView: some View {
-        ZStack {
-            // Profile color ring — only shown when the tab belongs to a named profile
-            if let colorName = profileColorName {
+        HStack(spacing: Spacing.px2) {
+            ZStack {
+                // Profile color ring — only shown when the tab belongs to a named profile
+                if let colorName = profileColorName {
+                    Circle()
+                        .stroke(resolvedProfileColor(colorName), lineWidth: 1.5)
+                        .frame(width: 20, height: 20)
+                }
+
                 Circle()
-                    .stroke(resolvedProfileColor(colorName), lineWidth: 1.5)
-                    .frame(width: 20, height: 20)
-            }
-
-            Circle()
-                .fill(isSelected ? Color.accentColor : Color.secondary.opacity(0.3))
-                .frame(width: 16, height: 16)
-
-            if tab.isLoading {
-                ProgressView()
-                    .scaleEffect(0.4)
+                    .fill(isSelected ? Color.accentColor : Color.secondary.opacity(0.3))
                     .frame(width: 16, height: 16)
-            } else {
-                let letter = String((tab.url?.host ?? tab.title).prefix(1)).uppercased()
-                Text(letter)
-                    .font(.system(size: 9, weight: .bold))
-                    .foregroundStyle(isSelected ? .white : .primary)
+
+                if tab.isLoading {
+                    ProgressView()
+                        .scaleEffect(0.4)
+                        .frame(width: 16, height: 16)
+                } else {
+                    let letter = String((tab.url?.host ?? tab.title).prefix(1)).uppercased()
+                    Text(letter)
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(isSelected ? .white : .primary)
+                }
             }
+            .frame(width: 20, height: 20)
+
+            ProvenanceBadge(provenance: tab.record.provenance)
         }
-        .frame(width: 20, height: 20)
     }
 
     // MARK: - Profile color helper
