@@ -20,13 +20,15 @@ final class AddressBar: NSTextField {
             if let url = URL(string: trimmed),
                let scheme = url.scheme,
                ["http", "https"].contains(scheme.lowercased()),
-               url.host != nil {
+               url.host != nil,
+               url.user == nil {   // reject credential syntax e.g. https://evil.com@good.com
                 return .navigate(url)
             }
 
             // Looks like a bare domain (has dots, no spaces, doesn't start with "?")
             if trimmed.contains(".") && !trimmed.contains(" ") && !trimmed.hasPrefix("?") {
-                if let url = URL(string: "https://\(trimmed)") {
+                if let url = URL(string: "https://\(trimmed)"),
+                   url.user == nil {   // reject credential syntax e.g. evil.com@good.com
                     return .navigate(url)
                 }
             }
