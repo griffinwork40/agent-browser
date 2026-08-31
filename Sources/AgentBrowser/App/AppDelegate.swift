@@ -9,6 +9,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var profileManager: ProfileManager?
     private var tabManager: TabManager?
 
+    // Persistence coordinator: sessions, history, auto-save.
+    private let persistenceCoordinator = PersistenceCoordinator()
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupMainMenu()
 
@@ -18,8 +21,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let tm = TabManager(profileManager: pm)
         self.tabManager = tm
 
-        // Create the browser window
-        windowController = BrowserWindowController(tabManager: tm, profileManager: pm)
+        // Create the browser window (without an initial tab — restore decides).
+        windowController = BrowserWindowController(
+            tabManager: tm,
+            profileManager: pm,
+            skipInitialTab: true
+        )
         windowController?.showWindow(nil)
 
         // Start the agent automation server
@@ -31,6 +38,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         agentServer?.start()
 
         NSApp.activate(ignoringOtherApps: true)
+
+        // Bootstrap persistence stores and restore the previous session.
+        // Runs async to avoid blocking the main thread during disk I/O,
+        // but stays on MainActor so TabManager mutations are safe.
+        Task { @MainActor in
+            await persistenceCoordinator.setUp()
+
+            let restored = await persistenceCoordinator.restoreSession(into: tm)
+            if !restored {
+                // No saved session — open a single blank tab.
+                let firstTab = tm.createTab()
+                tm.select(tab: firstTab)
+            }
+
+            // Wire history recording into the window controller.
+            if let historyStore = persistenceCoordinator.makeHistoryStore() {
+                windowController?.attachHistoryStore(historyStore)
+            }
+
+            windowController?.syncDisplayedTab()
+            windowController?.updateSidebar()
+
+            // Start debounced auto-save (every 30 s).
+            persistenceCoordinator.startAutoSave(tabManager: tm)
+        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -39,6 +71,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         agentServer?.stop()
+        // NSApplicationDelegate methods run on the main thread.
+        // Use assumeIsolated to satisfy the compiler without an async hop
+        // (we cannot await here; applicationWillTerminate is synchronous).
+        MainActor.assumeIsolated {
+            persistenceCoordinator.stopAutoSave()
+            if let tm = tabManager {
+                persistenceCoordinator.saveSession(from: tm)
+            }
+        }
     }
 
     // MARK: - Main Menu

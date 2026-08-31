@@ -39,9 +39,14 @@ final class BrowserWindowController: NSWindowController {
 
     private var progressObservation: NSKeyValueObservation?
 
+    // MARK: - Persistence
+
+    /// Shared history store — injected after async init in PersistenceCoordinator.
+    private var historyStore: HistoryStore?
+
     // MARK: - Init
 
-    init(tabManager: TabManager, profileManager: ProfileManager) {
+    init(tabManager: TabManager, profileManager: ProfileManager, skipInitialTab: Bool = false) {
         self.tabManager = tabManager
         self.profileManager = profileManager
 
@@ -69,9 +74,39 @@ final class BrowserWindowController: NSWindowController {
             self?.updateSidebar()
         }
 
-        // Create first tab
-        let firstTab = tabManager.createTab()
-        tabManager.select(tab: firstTab)
+        // Create first tab unless the caller will restore one asynchronously.
+        if !skipInitialTab {
+            let firstTab = tabManager.createTab()
+            tabManager.select(tab: firstTab)
+        }
+    }
+
+    // MARK: - History Injection
+
+    /// Injects the shared HistoryStore so navigation events can be recorded.
+    /// Wires the store into all currently open tabs and into every future tab
+    /// created while this window is alive.
+    func attachHistoryStore(_ store: HistoryStore) {
+        self.historyStore = store
+
+        // Wire into already-open tabs (restored from disk or pre-existing).
+        for tab in tabManager.tabs {
+            tab.attachHistoryStore(store)
+        }
+
+        // Wire into tabs created after this point by observing TabManager.
+        // We piggyback on the existing onSelectionChanged hook — new tabs
+        // are always selected immediately after creation, so this fires
+        // at the right moment.
+        let previousSelectionChanged = tabManager.onSelectionChanged
+        tabManager.onSelectionChanged = { [weak self] in
+            previousSelectionChanged?()
+            // Attach history store to the newly-selected tab if needed.
+            if let activeTab = self?.tabManager.activeTab,
+               let hs = self?.historyStore {
+                activeTab.attachHistoryStore(hs)
+            }
+        }
     }
 
     @available(*, unavailable)
