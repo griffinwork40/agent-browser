@@ -282,6 +282,7 @@ final class BrowserWindowController: NSWindowController {
             window?.title = "[\((tabManager.selectedTabIndex) + 1)/\(tabCount)] "
                 + (tab.title.isEmpty ? "Agent Browser" : tab.title)
         }
+        addressBar.updateSecurityIndicator(isSecure: tab.isSecure)
     }
 
     private func observeProgress(for tab: BrowserTab) {
