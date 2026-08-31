@@ -436,7 +436,7 @@ The agent API is the product thesis. A browser without it is just another WebKit
 | Command palette | Valuable but not foundational | V2 |
 | User profiles | Easy to implement; profile-switching UI is scope | V2 |
 | Password autofill | Requires Apple-managed `web-browser` entitlement | V2+ |
-| WebAuthn / Passkeys | Requires separate Apple entitlement | V1.1 (apply early) |
+| WebAuthn / Passkeys | Requires separate Apple entitlement | V1.2 (apply early) |
 | Default browser registration | Private API; Apple-relations risk | V2 |
 | Sync | Cloud infra, accounts, conflict resolution | Not planned |
 | iOS / cross-platform | macOS only | Not planned |

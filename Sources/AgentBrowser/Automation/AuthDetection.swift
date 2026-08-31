@@ -194,12 +194,65 @@ extension BrowserAutomationService {
             }
         }
 
+        // 9. Passkey / WebAuthn detection
+        // Detect pages requesting passkey or WebAuthn authentication.
+        // Checks: URL patterns, heading text, button text, and page content
+        // that indicate a passkey ceremony is expected.
+        const passkeyUrlPatterns = ['/challenge/pk/', '/passkey', '/webauthn'];
+        for (const p of passkeyUrlPatterns) {
+            if (path.indexOf(p) !== -1 || url.indexOf(p) !== -1) {
+                signals.push({ type: 'passkey_url', detail: p });
+                break;
+            }
+        }
+
+        const passkeyHeadings = [
+            'use your passkey', 'sign in with a passkey',
+            'use your security key', 'insert your security key', 'tap your security key',
+            "confirm it's really you", "verify it's you"  // Google passkey prompts
+        ];
+        for (const h of headings) {
+            const text = (h.textContent || '').toLowerCase().trim();
+            if (passkeyHeadings.some(pk => text.includes(pk))) {
+                signals.push({ type: 'passkey_heading', detail: text.substring(0, 80) });
+                break;
+            }
+        }
+
+        // Passkey-related button or link text (e.g. "Use a passkey", "Continue" on passkey pages)
+        const passkeyButtonTexts = ['use a passkey', 'use passkey', 'sign in with passkey',
+            'use your passkey', 'use a security key'];
+        const allButtons = document.querySelectorAll('button, a[role="button"], [role="link"]');
+        for (const btn of allButtons) {
+            const text = (btn.textContent || '').toLowerCase().trim();
+            if (passkeyButtonTexts.some(pk => text.includes(pk))) {
+                signals.push({ type: 'passkey_button', detail: text.substring(0, 80) });
+                break;
+            }
+        }
+
+        // Detect WebAuthn API presence on the page (conditional UI hints)
+        if (typeof PublicKeyCredential !== 'undefined') {
+            const conditionalInputs = document.querySelectorAll(
+                'input[autocomplete*="webauthn"]'
+            );
+            if (conditionalInputs.length > 0) {
+                signals.push({ type: 'webauthn_conditional', detail: conditionalInputs.length + ' inputs' });
+            }
+        }
+
         // Classify the overall status
         let status = 'authenticated';
         const types = signals.map(s => s.type);
 
+        const hasPasskeySignal = types.includes('passkey_url') ||
+            types.includes('passkey_heading') || types.includes('passkey_button') ||
+            types.includes('webauthn_conditional');
+
         if (types.includes('captcha')) {
             status = 'captcha_blocked';
+        } else if (hasPasskeySignal) {
+            status = 'passkey_required';
         } else if (types.includes('mfa_field')) {
             status = 'mfa_required';
         } else if (types.includes('paywall')) {
@@ -229,7 +282,8 @@ extension BrowserAutomationService {
 
 struct AuthStatusResult: Codable, Sendable {
     let status: String       // authenticated | login_required | session_expired |
-                              // mfa_required | captcha_blocked | paywall
+                              // mfa_required | captcha_blocked | paywall |
+                              // passkey_required
     let url: String
     let title: String
     let signals: [[String: String]]

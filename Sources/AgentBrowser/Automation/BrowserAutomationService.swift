@@ -11,9 +11,11 @@ import WebKit
 @MainActor
 final class BrowserAutomationService {
     private let tabManager: TabManager
+    private(set) var takeoverHandler: TakeoverHandler
 
-    init(tabManager: TabManager) {
+    init(tabManager: TabManager, takeoverHandler: TakeoverHandler) {
         self.tabManager = tabManager
+        self.takeoverHandler = takeoverHandler
     }
 
     // MARK: - Callback-based Dispatch (for HTTP server)

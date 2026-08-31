@@ -57,6 +57,7 @@ enum ErrorCode {
     static let waitTimeout = "WAIT_TIMEOUT"
     static let navigationFailed = "NAVIGATION_FAILED"
     static let invalidArgument = "INVALID_ARGUMENT"
+    static let invalidState = "INVALID_STATE"
 }
 
 // MARK: - AnyCodable (lightweight type-erased Codable)

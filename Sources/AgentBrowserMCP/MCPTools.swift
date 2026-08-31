@@ -97,7 +97,7 @@ struct MCPTools {
                  required: ["tab_id"]),
 
             tool("browser_auth_status",
-                 desc: "Detect whether a page requires authentication. Returns a status: 'authenticated', 'login_required', 'session_expired', 'mfa_required', 'captcha_blocked', 'paywall', or 'unknown' (detection script returned no status -- treat as needing human review). Use before attempting to interact with a page that may need login. Returns detection signals (URL patterns, password fields, login forms, CAPTCHA, MFA inputs) so the agent can decide how to proceed.",
+                 desc: "Detect whether a page requires authentication. Returns a status: 'authenticated', 'login_required', 'session_expired', 'mfa_required', 'captcha_blocked', 'paywall', 'passkey_required', or 'unknown'. When status is 'passkey_required', the page needs a passkey/WebAuthn/biometric ceremony that the agent cannot complete -- call browser_request_auth to hand off to the human. Returns detection signals so the agent can decide how to proceed.",
                  props: ["tab_id": prop("string", "Tab ID from browser_tabs")],
                  required: ["tab_id"]),
 
@@ -116,6 +116,28 @@ struct MCPTools {
                     "account": prop("string", "Optional: specific account/username to look up. If omitted, returns the first matching credential for the domain.")
                  ],
                  required: ["tab_id", "element_id", "domain"]),
+
+            tool("browser_request_auth",
+                 desc: "Request human authentication handoff. Use when the page requires passkey, WebAuthn, biometric, or any auth the agent cannot complete programmatically. The agent pauses and the human completes the auth ceremony in the live browser. Call browser_auth_completed after the human finishes. Check browser_auth_status first -- if status is 'passkey_required', call this tool.",
+                 props: [
+                    "tab_id": prop("string", "Tab ID from browser_tabs"),
+                    "reason": prop("string", "Why handoff is needed (e.g. 'passkey_required', 'biometric', 'WebAuthn')")
+                 ],
+                 required: ["tab_id"]),
+
+            tool("browser_auth_completed",
+                 desc: "Signal that human authentication is complete. Call after the human has finished the passkey/WebAuthn/biometric ceremony in the browser. Resumes the agent on the tab. Only valid when the tab is in the 'awaiting_auth' state (after browser_request_auth was called).",
+                 props: [
+                    "tab_id": prop("string", "Tab ID from browser_tabs")
+                 ],
+                 required: ["tab_id"]),
+
+            tool("browser_handoff_status",
+                 desc: "Check the auth handoff state for a tab. Returns the current control state, the active agent ID (if any), and the auth reason (if awaiting_auth). Use to poll whether the human has completed authentication after browser_request_auth was called.",
+                 props: [
+                    "tab_id": prop("string", "Tab ID from browser_tabs")
+                 ],
+                 required: ["tab_id"]),
         ]
     }
 
@@ -201,6 +223,26 @@ struct MCPTools {
             if let type = args["type"] as? String { params["type"] = type }
             if let account = args["account"] as? String { params["account"] = account }
             return callBrowserFillFromKeychain(params: params)
+
+        case "browser_request_auth":
+            guard let tabId = args["tab_id"] as? String else {
+                return toolError("Missing required argument: tab_id")
+            }
+            var params: [String: Any] = ["id": tabId]
+            if let reason = args["reason"] as? String { params["reason"] = reason }
+            return callBrowser(method: "auth.requestHandoff", params: params)
+
+        case "browser_auth_completed":
+            guard let tabId = args["tab_id"] as? String else {
+                return toolError("Missing required argument: tab_id")
+            }
+            return callBrowser(method: "auth.completeHandoff", params: ["id": tabId])
+
+        case "browser_handoff_status":
+            guard let tabId = args["tab_id"] as? String else {
+                return toolError("Missing required argument: tab_id")
+            }
+            return callBrowser(method: "auth.handoffStatus", params: ["id": tabId])
 
         default:
             return toolError("Unknown tool: \(name)")

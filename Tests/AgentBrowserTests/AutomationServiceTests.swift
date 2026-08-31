@@ -19,7 +19,7 @@ struct AutomationServiceTests {
     @MainActor
     private func makeService() -> (TabManager, BrowserAutomationService) {
         let tm = TabManager()
-        let svc = BrowserAutomationService(tabManager: tm)
+        let svc = BrowserAutomationService(tabManager: tm, takeoverHandler: TakeoverHandler())
         return (tm, svc)
     }
 

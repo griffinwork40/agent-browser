@@ -689,7 +689,7 @@ Explicitly not in V1. Each item has a reason.
 | **Command palette** | Valuable but not blocking. It's a UI feature on top of a working browser, not a foundation. V2. |
 | **User profiles** | `WKWebsiteDataStore(forIdentifier:)` makes profiles easy to implement, but the profile switching UI, per-profile settings, and profile management are scope. V2. |
 | **Password manager integration** | Requires `com.apple.developer.web-browser` entitlement (Apple approval process). V2 after entitlement is granted. |
-| **WebAuthn / Passkeys** | Requires separate `com.apple.developer.web-browser.public-key-credential` entitlement. V2. |
+| **WebAuthn / Passkeys** | Requires separate `com.apple.developer.web-browser.public-key-credential` entitlement. V1.2. |
 | **Default browser registration** | Requires private API (`LSSetDefaultHandlerForURLScheme`). Not V1 -- too much Apple-relations risk for a first release. |
 | **Sync (bookmarks, history, tabs)** | Cloud infrastructure, accounts, conflict resolution. Way out of scope. |
 | **iOS / cross-platform** | macOS only. Period. |
@@ -791,7 +791,7 @@ Tabs in `.suspended` state (via `inactiveSchedulingPolicy = .suspend`) lose thei
 
 Requires `com.apple.developer.web-browser.public-key-credential` entitlement.
 
-**Mitigation:** Apply for the entitlement early (it's separate from the web-browser entitlement). Not blocking V1 launch, but should be in V1.1.
+**Mitigation:** Apply for the entitlement early (it's separate from the web-browser entitlement). Not blocking V1 launch; targeted for V1.2.
 
 ---
 

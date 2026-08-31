@@ -23,7 +23,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         windowController?.showWindow(nil)
 
         // Start the agent automation server
-        let automationService = BrowserAutomationService(tabManager: tm)
+        let automationService = BrowserAutomationService(
+            tabManager: tm,
+            takeoverHandler: TakeoverHandler()
+        )
         agentServer = AgentHTTPServer(automationService: automationService)
         agentServer?.start()
 
