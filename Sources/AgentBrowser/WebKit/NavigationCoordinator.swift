@@ -10,6 +10,10 @@ final class NavigationCoordinator: NSObject, WKNavigationDelegate {
     /// Called on navigation finish.
     var onDidFinish: (() -> Void)?
 
+    /// Injected by PersistenceCoordinator / BrowserWindowController after async init.
+    /// Receives a history record on every successfully completed navigation.
+    var historyStore: HistoryStore?
+
     // MARK: - WKNavigationDelegate
 
     func webView(
@@ -50,6 +54,16 @@ final class NavigationCoordinator: NSObject, WKNavigationDelegate {
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         onDidFinish?()
+
+        // Record the completed navigation in browsing history.
+        if let url = webView.url, !url.isFileURL {
+            let title = webView.title ?? url.host ?? url.absoluteString
+            if let store = historyStore {
+                Task {
+                    await store.addEntry(url: url, title: title)
+                }
+            }
+        }
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {

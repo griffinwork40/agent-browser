@@ -38,6 +38,12 @@ final class BrowserTab: Identifiable {
     // Callback for when a popup/new-tab navigation is requested
     var onNewTabRequested: ((URL) -> Void)?
 
+    /// Inject the shared HistoryStore so every completed navigation is recorded.
+    /// Call after async persistence initialisation is complete.
+    func attachHistoryStore(_ store: HistoryStore) {
+        navigationCoordinator.historyStore = store
+    }
+
     /// A point-in-time snapshot of this tab's current navigation state.
     var navState: NavigationState {
         NavigationState(
