@@ -60,6 +60,32 @@ extension BrowserAutomationService {
             )
             return true
 
+        case "auth.requestHandoff":
+            guard let id = params["id"] as? String else {
+                completion(.failure(code: ErrorCode.invalidParams, message: "Missing 'id'"))
+                return true
+            }
+            let reason = params["reason"] as? String
+            requestHandoffCallback(tabId: id, reason: reason, completion: completion)
+            return true
+
+        case "auth.completeHandoff":
+            guard let id = params["id"] as? String else {
+                completion(.failure(code: ErrorCode.invalidParams, message: "Missing 'id'"))
+                return true
+            }
+            completeHandoffCallback(tabId: id, completion: completion)
+            return true
+
+        case "auth.handoffStatus":
+            guard let id = params["id"] as? String else {
+                completion(.failure(code: ErrorCode.invalidParams, message: "Missing 'id'"))
+                return true
+            }
+            let response = handoffStatusResponse(tabId: id)
+            completion(response)
+            return true
+
         default:
             return false
         }
@@ -108,6 +134,25 @@ extension BrowserAutomationService {
                 tabId: id, elementId: elId, domain: domain,
                 credentialType: credType, account: account
             )
+
+        case "auth.requestHandoff":
+            guard let id = params["id"] as? String else {
+                return .failure(code: ErrorCode.invalidParams, message: "Missing 'id'")
+            }
+            let reason = params["reason"] as? String
+            return await requestHandoffResponse(tabId: id, reason: reason)
+
+        case "auth.completeHandoff":
+            guard let id = params["id"] as? String else {
+                return .failure(code: ErrorCode.invalidParams, message: "Missing 'id'")
+            }
+            return await completeHandoffResponse(tabId: id)
+
+        case "auth.handoffStatus":
+            guard let id = params["id"] as? String else {
+                return .failure(code: ErrorCode.invalidParams, message: "Missing 'id'")
+            }
+            return handoffStatusResponse(tabId: id)
 
         default:
             return nil
