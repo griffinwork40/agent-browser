@@ -22,6 +22,7 @@ final class BrowserWindowController: NSWindowController {
     let backButton = NSButton()
     let forwardButton = NSButton()
     let reloadButton = NSButton()
+    let sidebarToggleButton = NSButton()
     let progressBar = NSProgressIndicator()
     let webContentView = NSView()
     let toolbarContainer = NSView()
@@ -90,16 +91,19 @@ final class BrowserWindowController: NSWindowController {
         contentView.addSubview(toolbarContainer)
         setupToolbarGlassBackground()
         setupNavigationButtons()
+        setupSidebarToggle()
         setupAddressBar()
         setupProgressBar()
 
-        // Sidebar container — sits to the LEFT of web content
-        sidebarContainerView.translatesAutoresizingMaskIntoConstraints = false
-        contentView.addSubview(sidebarContainerView)
-
-        // Web content area — fills everything to the right of the sidebar
+        // Web content area — fills everything to the left of the sidebar
         webContentView.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(webContentView)
+
+        // Sidebar container — sits to the RIGHT of web content
+        sidebarContainerView.translatesAutoresizingMaskIntoConstraints = false
+        sidebarContainerView.wantsLayer = true
+        sidebarContainerView.layer?.masksToBounds = true
+        contentView.addSubview(sidebarContainerView)
 
         let widthConstraint = sidebarContainerView.widthAnchor.constraint(
             equalToConstant: ControlSize.sidebarWidth
@@ -116,16 +120,16 @@ final class BrowserWindowController: NSWindowController {
             toolbarContainer.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
             toolbarContainer.heightAnchor.constraint(equalToConstant: ControlSize.toolbarHeight),
 
-            // Sidebar: left edge → full height below toolbar
+            // Sidebar: right edge, full height below toolbar
             sidebarContainerView.topAnchor.constraint(equalTo: toolbarContainer.bottomAnchor),
-            sidebarContainerView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            sidebarContainerView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
             sidebarContainerView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
             widthConstraint,
 
-            // Web content: fills remainder to the right of sidebar
+            // Web content: fills remainder to the left of sidebar
             webContentView.topAnchor.constraint(equalTo: toolbarContainer.bottomAnchor),
-            webContentView.leadingAnchor.constraint(equalTo: sidebarContainerView.trailingAnchor),
-            webContentView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            webContentView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            webContentView.trailingAnchor.constraint(equalTo: sidebarContainerView.leadingAnchor),
             webContentView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
         ])
     }
