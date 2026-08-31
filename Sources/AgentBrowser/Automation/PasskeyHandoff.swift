@@ -182,9 +182,9 @@ struct HandoffResult: Codable, Sendable {
     /// strip ASCII control characters. Mirrors AuthStatusResult.sanitize.
     static func sanitize(_ raw: String?, maxLength: Int = 256) -> String? {
         guard let raw else { return nil }
-        let truncated = raw.count > maxLength ? String(raw.prefix(maxLength)) : raw
-        return truncated.unicodeScalars.filter { $0.value >= 0x20 }
+        let filtered = raw.unicodeScalars.filter { $0.value >= 0x20 }
             .reduce(into: "") { $0 += String($1) }
+        return filtered.count > maxLength ? String(filtered.prefix(maxLength)) : filtered
     }
 }
 

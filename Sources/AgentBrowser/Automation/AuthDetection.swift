@@ -207,7 +207,8 @@ extension BrowserAutomationService {
         }
 
         const passkeyHeadings = [
-            'use your passkey', 'sign in with a passkey', 'security key',
+            'use your passkey', 'sign in with a passkey',
+            'use your security key', 'insert your security key', 'tap your security key',
             "confirm it's really you", "verify it's you"  // Google passkey prompts
         ];
         for (const h of headings) {

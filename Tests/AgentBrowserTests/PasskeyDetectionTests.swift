@@ -77,16 +77,18 @@ struct PasskeyDetectionTests {
         #expect(handler.controlState(for: tabID).state == .agentActive)
 
         // Request handoff
-        handler.requestAuth(tabID: tabID)
+        handler.requestAuth(tabID: tabID, reason: "passkey_required")
         let state = handler.controlState(for: tabID)
         #expect(state.state == .awaitingAuth)
         #expect(state.activeAgentID == "mcp-agent")
         #expect(handler.awaitingAuthTabs.contains(tabID))
+        #expect(state.authReason == "passkey_required")
 
         // Complete handoff
         handler.authCompleted(tabID: tabID)
         #expect(handler.controlState(for: tabID).state == .agentActive)
         #expect(!handler.awaitingAuthTabs.contains(tabID))
+        #expect(handler.controlState(for: tabID).authReason == nil)
     }
 
     @Test("requestAuth from idle is no-op")
