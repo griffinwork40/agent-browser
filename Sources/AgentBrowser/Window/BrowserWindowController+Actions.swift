@@ -21,6 +21,19 @@ extension BrowserWindowController {
     }
 
     @objc func closeCurrentTab(_ sender: Any?) {
+        // P2: record closed tab to workspace registry before removal.
+        if let tab = tabManager.activeTab {
+            let entry = ProfileWorkspace.TabEntry(
+                id: tab.id,
+                urlString: tab.url?.absoluteString,
+                title: tab.title,
+                provenance: tab.record.provenance,
+                profileID: tab.record.profileID
+            )
+            let pid = tab.record.profileID
+            let existing = workspaceRegistry[pid] ?? ProfileWorkspace.empty(for: pid)
+            workspaceRegistry[pid] = existing.addingClosed(entry)
+        }
         tabManager.closeCurrentTab()
 
         if tabManager.tabs.isEmpty {
@@ -127,8 +140,7 @@ extension BrowserWindowController {
     }
 
     @objc func createNewProfile(_ sender: Any?) {
-        profileManager.createProfile(name: "New Profile")
-        updateSidebar()
+        promptAndCreateProfile()
     }
 
     // MARK: - Zoom

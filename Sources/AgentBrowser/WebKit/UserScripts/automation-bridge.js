@@ -1,3 +1,7 @@
+// automation-bridge.js
+// Main automation bridge. Requires automation-bridge-relevance.js to be
+// injected first (same WKContentWorld) so AB._scoreElement, AB._queryMatch,
+// AB._matchesMode, and AB._deduplicateElements are available.
 (() => {
   'use strict';
 
@@ -34,7 +38,7 @@
   function truncate(s, n) {
     if (!s) return '';
     s = s.trim();
-    return s.length > n ? s.slice(0, n) + '…' : s;
+    return s.length > n ? s.slice(0, n) + '\u2026' : s;
   }
 
   // --- Accessible name (priority order per spec) ---
@@ -52,13 +56,11 @@
       if (text) return text;
     }
 
-    // Associated label via for/id
     const id = el.id;
     if (id) {
       const lbl = document.querySelector(`label[for="${CSS.escape(id)}"]`);
       if (lbl) return (lbl.innerText || lbl.textContent || '').trim();
     }
-    // Wrapping label
     const parentLabel = el.closest('label');
     if (parentLabel) {
       const clone = parentLabel.cloneNode(true);
@@ -123,161 +125,6 @@
     'slider','spinbutton','treeitem','gridcell',
   ]);
 
-  // --- Relevance Scoring ---
-
-  const FOOTER_PATTERNS = /privacy|terms|cookie|legal|copyright|©|sitemap|accessibility/i;
-  const BOILERPLATE_PATTERNS = /^(skip to|sign up|log in|subscribe|newsletter|follow us|share|tweet|facebook|twitter|linkedin|instagram|youtube|pinterest|reddit|rss)/i;
-  const HIGH_VALUE_ROLES = new Set(['textbox','searchbox','combobox','button','checkbox','radio','switch','slider','spinbutton']);
-  const FORM_TAGS = new Set(['INPUT','TEXTAREA','SELECT']);
-
-  function scoreElement(el, entry) {
-    var score = 0;
-    var tag = el.tagName.toUpperCase();
-    var rect = entry.rect;
-    var vh = window.innerHeight;
-    var vw = window.innerWidth;
-    var name = entry.name || '';
-    var text = entry.text || '';
-    var role = entry.role || '';
-    var combinedLabel = (name + ' ' + text).toLowerCase();
-
-    // In-viewport: strong positive
-    if (rect.y >= 0 && rect.y < vh && rect.x >= 0 && rect.x < vw) {
-      score += 30;
-      // Near viewport center: bonus
-      var cy = rect.y + rect.height / 2;
-      var cx = rect.x + rect.width / 2;
-      var distFromCenter = Math.sqrt(Math.pow((cx - vw/2) / vw, 2) + Math.pow((cy - vh/2) / vh, 2));
-      if (distFromCenter < 0.3) score += 10;
-    }
-
-    // Focused element: strong signal
-    if (document.activeElement === el) score += 40;
-
-    // Form inputs: high value for agent interaction
-    if (FORM_TAGS.has(tag)) score += 25;
-
-    // High-value ARIA roles
-    if (HIGH_VALUE_ROLES.has(role)) score += 15;
-
-    // Has accessible name: more useful
-    if (name) score += 10;
-
-    // Larger visible area: more prominent
-    var area = rect.width * rect.height;
-    if (area > 5000) score += 8;
-    else if (area > 1000) score += 4;
-
-    // Part of a form
-    if (el.closest('form')) score += 10;
-
-    // Primary/submit buttons
-    if (tag === 'BUTTON' || (tag === 'INPUT' && (el.type === 'submit' || el.type === 'button'))) {
-      score += 8;
-    }
-
-    // Search inputs
-    if (el.type === 'search' || role === 'searchbox' ||
-        /search/i.test(name) || /search/i.test(el.placeholder || '')) {
-      score += 20;
-    }
-
-    // Negative: footer/boilerplate
-    if (el.closest('footer') || el.closest('[role="contentinfo"]')) score -= 20;
-    if (FOOTER_PATTERNS.test(combinedLabel)) score -= 25;
-    if (BOILERPLATE_PATTERNS.test(combinedLabel)) score -= 15;
-
-    // Negative: very small controls (likely decorative)
-    if (area < 100) score -= 10;
-
-    // Negative: offscreen
-    if (rect.y + rect.height < 0 || rect.y > vh * 2) score -= 30;
-
-    // Negative: empty name on non-input
-    if (!name && !text && !FORM_TAGS.has(tag)) score -= 15;
-
-    // Negative: repetitive nav (deeply nested in nav with many siblings)
-    var nav = el.closest('nav');
-    if (nav && nav.querySelectorAll('a').length > 20) score -= 10;
-
-    return score;
-  }
-
-  function queryMatch(entry, query) {
-    if (!query) return 0;
-    var q = query.toLowerCase();
-    var terms = q.split(/\s+/).filter(Boolean);
-    var score = 0;
-    var fields = [
-      (entry.name || '').toLowerCase(),
-      (entry.text || '').toLowerCase(),
-      (entry.placeholder || '').toLowerCase(),
-      (entry.href || '').toLowerCase(),
-      (entry.role || '').toLowerCase(),
-    ];
-    for (var t of terms) {
-      for (var f of fields) {
-        if (f.includes(t)) { score += 10; break; }
-      }
-    }
-    // Exact match bonus
-    var combinedLabel = fields.slice(0, 3).join(' ');
-    if (combinedLabel.includes(q)) score += 20;
-    return score;
-  }
-
-  // --- Mode Filtering ---
-
-  function matchesMode(el, entry, mode) {
-    var tag = el.tagName.toUpperCase();
-    var role = entry.role || '';
-    switch (mode) {
-    case 'forms':
-      return FORM_TAGS.has(tag) || role === 'checkbox' || role === 'radio' ||
-             role === 'switch' || role === 'combobox' || role === 'listbox' ||
-             role === 'spinbutton' || role === 'slider' ||
-             (tag === 'BUTTON' && (el.type === 'submit' || el.closest('form')));
-    case 'navigation':
-      return tag === 'A' || role === 'link' || role === 'tab' ||
-             role === 'menuitem' || role === 'treeitem' ||
-             el.closest('nav') !== null;
-    case 'all':
-      return true;
-    default: // 'interactive'
-      return true;
-    }
-  }
-
-  // --- Deduplication ---
-
-  function deduplicateElements(elements) {
-    var seen = new Map();
-    var result = [];
-    for (var entry of elements) {
-      var key = (entry.role || entry.tag) + '|' + (entry.name || entry.text || '');
-      // Keep elements with unique identity; skip exact duplicates with same label
-      if (key === '|' || key === 'null|') {
-        // Both role and name empty -- keep if it has a unique href or input type
-        key = entry.tag + '|' + (entry.href || '') + '|' + (entry.inputType || '');
-      }
-      if (seen.has(key)) {
-        var prev = seen.get(key);
-        // Keep the one with higher relevance score
-        if ((entry._score || 0) > (prev._score || 0)) {
-          // Replace previous
-          result = result.filter(function(e) { return e.id !== prev.id; });
-          result.push(entry);
-          seen.set(key, entry);
-        }
-        // else skip this duplicate
-      } else {
-        seen.set(key, entry);
-        result.push(entry);
-      }
-    }
-    return result;
-  }
-
   function collectElements() {
     const results = [];
     const seen = new Set();
@@ -325,11 +172,9 @@
         rect: { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) },
       };
 
-      // Strip undefined keys for a compact payload
       for (const k of Object.keys(entry)) { if (entry[k] === undefined) delete entry[k]; }
 
-      // Compute relevance score
-      entry._score = scoreElement(el, entry);
+      entry._score = AB._scoreElement(el, entry);
       entry._el = el;
 
       results.push(entry);
@@ -348,32 +193,26 @@
     var limit = typeof opts.limit === 'number' ? opts.limit : 30;
     var query = opts.query || null;
 
-    // Collect all interactive elements
     var allElements = collectElements();
     var totalInteractive = allElements.length;
 
-    // Apply mode filter
     var filtered = allElements;
     if (mode !== 'all') {
       filtered = allElements.filter(function(entry) {
-        return matchesMode(entry._el, entry, mode);
+        return AB._matchesMode(entry._el, entry, mode);
       });
     }
 
-    // Apply query scoring boost
     if (query) {
       for (var entry of filtered) {
-        entry._score += queryMatch(entry, query);
+        entry._score += AB._queryMatch(entry, query);
       }
     }
 
-    // Sort by relevance score descending
     filtered.sort(function(a, b) { return (b._score || 0) - (a._score || 0); });
 
-    // Deduplicate
-    filtered = deduplicateElements(filtered);
+    filtered = AB._deduplicateElements(filtered);
 
-    // Apply limit (0 or negative means unlimited)
     var truncated = false;
     var returnedCount = filtered.length;
     if (limit > 0 && filtered.length > limit) {
@@ -382,7 +221,6 @@
       returnedCount = filtered.length;
     }
 
-    // Strip internal fields before serialization
     var elements = filtered.map(function(entry) {
       var clean = {};
       for (var k of Object.keys(entry)) {
@@ -444,7 +282,10 @@
     if (!isVisible(el)) return JSON.stringify({ error: 'ELEMENT_NOT_VISIBLE' });
 
     const tag = el.tagName.toUpperCase();
-    const previousValue = el.value || el.textContent || '';
+    // Never return the previous value for password fields — doing so would leak
+    // credential data back to API callers. (A5 security boundary)
+    const isPasswordField = tag === 'INPUT' && el.type === 'password';
+    const previousValue = isPasswordField ? undefined : (el.value || el.textContent || '');
 
     try { el.focus(); } catch (_) {}
 

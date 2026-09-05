@@ -11,6 +11,9 @@ struct ProfilePickerView: View {
     let activeProfileID: UUID
     let onSwitchProfile: (UUID) -> Void
     let onCreateProfile: () -> Void
+    /// Called when the user submits a rename. Return `false` to indicate the
+    /// name was invalid (empty or duplicate); the row will show an error state.
+    var onRenameProfile: ((UUID, String) -> Bool)?
 
     @State private var isExpanded = false
 
@@ -84,6 +87,9 @@ struct ProfilePickerView: View {
                         withAnimation(.easeInOut(duration: Motion.standard)) {
                             isExpanded = false
                         }
+                    },
+                    onRename: onRenameProfile.map { handler in
+                        { newName in handler(profile.id, newName) }
                     }
                 )
             }

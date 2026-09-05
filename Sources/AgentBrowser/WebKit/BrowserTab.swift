@@ -171,6 +171,17 @@ final class BrowserTab: Identifiable {
         // click, fill, press, select, and wait operations.
         // Runs in an isolated content world ("AgentBridge") so page JS cannot
         // access window.__agentBrowser or tamper with the bridge.
+        // Relevance helpers must be injected first so AB._scoreElement etc. are
+        // available when the main bridge initialises element collection.
+        if let relevanceJS = Self.loadScript(named: "automation-bridge-relevance") {
+            let relevanceScript = WKUserScript(
+                source: relevanceJS,
+                injectionTime: .atDocumentEnd,
+                forMainFrameOnly: true,
+                in: .world(name: "AgentBridge")
+            )
+            config.userContentController.addUserScript(relevanceScript)
+        }
         if let bridgeJS = Self.loadAutomationBridge() {
             let script = WKUserScript(
                 source: bridgeJS,
@@ -184,24 +195,19 @@ final class BrowserTab: Identifiable {
         return config
     }
 
-    /// Load the automation-bridge.js from the bundle or filesystem.
-    /// Checks: SPM .copy bundle path, main bundle, working directory fallback.
-    private static func loadAutomationBridge() -> String? {
-        // SPM .copy preserves the subdirectory structure
-        if let url = Bundle.module.url(forResource: "automation-bridge", withExtension: "js",
+    /// Load a named JS file from UserScripts (bundle or dev fallback).
+    private static func loadScript(named name: String) -> String? {
+        if let url = Bundle.module.url(forResource: name, withExtension: "js",
                                         subdirectory: "UserScripts") {
             return try? String(contentsOf: url, encoding: .utf8)
         }
-        if let url = Bundle.main.url(forResource: "automation-bridge", withExtension: "js") {
+        if let url = Bundle.main.url(forResource: name, withExtension: "js") {
             return try? String(contentsOf: url, encoding: .utf8)
         }
 #if DEBUG
-        // Development-only fallback: load from cwd-relative source path.
-        // Guarded by #if DEBUG so release builds cannot be attacked by
-        // placing a malicious file at these relative paths.
         let devPaths = [
-            "Sources/AgentBrowser/WebKit/UserScripts/automation-bridge.js",
-            "../Sources/AgentBrowser/WebKit/UserScripts/automation-bridge.js",
+            "Sources/AgentBrowser/WebKit/UserScripts/\(name).js",
+            "../Sources/AgentBrowser/WebKit/UserScripts/\(name).js",
         ]
         for path in devPaths {
             if FileManager.default.fileExists(atPath: path) {
@@ -209,7 +215,13 @@ final class BrowserTab: Identifiable {
             }
         }
 #endif
-        print("[BrowserTab] Warning: automation-bridge.js not found")
+        print("[BrowserTab] Warning: \(name).js not found")
         return nil
+    }
+
+    /// Load the automation-bridge.js from the bundle or filesystem.
+    /// Checks: SPM .copy bundle path, main bundle, working directory fallback.
+    private static func loadAutomationBridge() -> String? {
+        loadScript(named: "automation-bridge")
     }
 }
