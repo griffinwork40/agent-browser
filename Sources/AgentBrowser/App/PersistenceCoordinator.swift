@@ -221,4 +221,18 @@ final class PersistenceCoordinator {
     func makeHistoryStore() -> HistoryStore? {
         historyStore
     }
+
+    // MARK: - Test Hooks
+
+    /// Inject a SessionStore directly, bypassing `PersistenceManager.shared`.
+    /// Internal so `@testable import` exposes it to the test target.
+    func _testSetSessionStore(_ store: SessionStore) {
+        sessionStore = store
+    }
+
+    /// Inject a pending auto-save task for unit testing of the cancellation path.
+    @MainActor
+    func _testSetPendingAutoSaveTask(_ task: Task<Void, Never>) {
+        pendingAutoSaveTask = task
+    }
 }
