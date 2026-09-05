@@ -127,6 +127,18 @@ extension BrowserAutomationService {
             return .failure(code: ErrorCode.keychainError, message: "No credential found")
         }
 
+        // A4 — Document-identity check: verify the tab's committed URL host still
+        // matches the domain used for the Keychain lookup, immediately before injection.
+        // Cross-origin redirects or tab navigation during lookup cancel safely.
+        if let currentURL = tab.url {
+            guard Self.hostMatches(currentURL: currentURL, requestedDomain: domain) else {
+                return .failure(
+                    code: ErrorCode.navigationError,
+                    message: "Tab navigated to a different origin; fill cancelled (A4)"
+                )
+            }
+        }
+
         // Use callAsyncJavaScript with structured arguments so the credential is
         // passed as a data binding, never interpolated into JS source code.
         let script = "return window.__agentBrowser.fill(elementId, value)"
@@ -156,6 +168,22 @@ extension BrowserAutomationService {
                 message: error.localizedDescription
             )
         }
+    }
+
+    // MARK: - Origin Validation (A4)
+
+    /// Returns true when the current URL's host is a subdomain-or-equal match
+    /// for the requested credential domain.
+    ///
+    /// Examples:
+    ///   currentURL=https://accounts.google.com  domain=google.com  → true
+    ///   currentURL=https://evil.com              domain=google.com  → false
+    ///   currentURL=https://google.com.evil.com   domain=google.com  → false
+    static func hostMatches(currentURL: URL, requestedDomain: String) -> Bool {
+        guard let host = currentURL.host else { return false }
+        let lHost = host.lowercased()
+        let lDomain = requestedDomain.lowercased()
+        return lHost == lDomain || lHost.hasSuffix("." + lDomain)
     }
 
     // MARK: - Keychain Lookup

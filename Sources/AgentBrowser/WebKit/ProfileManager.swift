@@ -70,6 +70,17 @@ final class ProfileManager {
         config.mediaTypesRequiringUserActionForPlayback = []
         config.allowsAirPlayForMediaPlayback = true
 
+        // Relevance helpers must be injected first so AB._scoreElement etc. are
+        // available when the main bridge initialises element collection.
+        if let relevanceJS = loadScript(named: "automation-bridge-relevance") {
+            let relevanceScript = WKUserScript(
+                source: relevanceJS,
+                injectionTime: .atDocumentEnd,
+                forMainFrameOnly: true,
+                in: .world(name: "AgentBridge")
+            )
+            config.userContentController.addUserScript(relevanceScript)
+        }
         if let bridgeJS = loadAutomationBridge() {
             let script = WKUserScript(
                 source: bridgeJS,
@@ -106,6 +117,33 @@ final class ProfileManager {
         save()
     }
 
+    // MARK: - Rename
+
+    /// Rename a profile, enforcing non-empty and unique names.
+    ///
+    /// - Returns: `true` on success, `false` if validation fails.
+    @discardableResult
+    func renameProfile(id: UUID, to newName: String) -> Bool {
+        let trimmed = newName.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return false }
+        // Duplicate-name check: allow the same profile to keep its name.
+        let isDuplicate = profiles.contains { $0.name == trimmed && $0.id != id }
+        guard !isDuplicate else { return false }
+        guard var profile = profiles.first(where: { $0.id == id }) else { return false }
+        profile.name = trimmed
+        updateProfile(profile)
+        return true
+    }
+
+    // MARK: - Validation
+
+    /// Returns `true` when `name` is available (non-empty, not taken by another profile).
+    func isNameAvailable(_ name: String, excludingID: UUID? = nil) -> Bool {
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return false }
+        return !profiles.contains { $0.name == trimmed && $0.id != excludingID }
+    }
+
     func deleteProfile(id: UUID) async {
         guard profiles.count > 1 else { return }  // always keep at least one
         profiles.removeAll { $0.id == id }
@@ -126,21 +164,19 @@ final class ProfileManager {
 
     // MARK: - Automation Bridge
 
-    private func loadAutomationBridge() -> String? {
-        if let url = Bundle.module.url(forResource: "automation-bridge", withExtension: "js",
+    /// Load a named JS file from UserScripts (bundle or dev fallback).
+    private func loadScript(named name: String) -> String? {
+        if let url = Bundle.module.url(forResource: name, withExtension: "js",
                                         subdirectory: "UserScripts") {
             return try? String(contentsOf: url, encoding: .utf8)
         }
-        if let url = Bundle.main.url(forResource: "automation-bridge", withExtension: "js") {
+        if let url = Bundle.main.url(forResource: name, withExtension: "js") {
             return try? String(contentsOf: url, encoding: .utf8)
         }
 #if DEBUG
-        // Development-only fallback: load from cwd-relative source path.
-        // Guarded by #if DEBUG so release builds cannot be attacked by
-        // placing a malicious file at these relative paths.
         let devPaths = [
-            "Sources/AgentBrowser/WebKit/UserScripts/automation-bridge.js",
-            "../Sources/AgentBrowser/WebKit/UserScripts/automation-bridge.js",
+            "Sources/AgentBrowser/WebKit/UserScripts/\(name).js",
+            "../Sources/AgentBrowser/WebKit/UserScripts/\(name).js",
         ]
         for path in devPaths {
             if FileManager.default.fileExists(atPath: path) {
@@ -148,6 +184,11 @@ final class ProfileManager {
             }
         }
 #endif
+        print("[ProfileManager] Warning: \(name).js not found")
         return nil
+    }
+
+    private func loadAutomationBridge() -> String? {
+        loadScript(named: "automation-bridge")
     }
 }
