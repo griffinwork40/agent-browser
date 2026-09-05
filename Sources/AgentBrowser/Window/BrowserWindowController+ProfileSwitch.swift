@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import os
 
 // MARK: - Non-Destructive Profile Switching
 
@@ -62,9 +63,12 @@ extension BrowserWindowController {
                     profileID: profileID
                 )
             }
-        let selectedID = tabManager.activeTab.map { tab in
-            tab.record.profileID == profileID ? tab.id : nil
-        } ?? nil
+        let selectedID: UUID? = {
+            if let active = tabManager.activeTab, active.record.profileID == profileID {
+                return active.id
+            }
+            return tabManager.tabs.first(where: { $0.record.profileID == profileID })?.id
+        }()
 
         // Merge with any existing closed-tab history for this profile.
         let existing = workspaceRegistry[profileID]
@@ -157,23 +161,30 @@ extension BrowserWindowController {
     ) -> [UUID: ProfileWorkspace] {
         let tm = tabManager ?? self.tabManager
         let pm = profileManager ?? self.profileManager
+        let start = Date()
         var registry = workspaceRegistry
+
+        // Pre-group tabs by profileID once (O(n)) instead of filtering per profile (O(n*p)).
+        let tabsByProfile = Dictionary(grouping: tm.tabs, by: { $0.record.profileID })
+
         for profile in pm.profiles {
             let pid = profile.id
-            let tabEntries = tm.tabs
-                .filter { $0.record.profileID == pid }
-                .map { tab in
-                    ProfileWorkspace.TabEntry(
-                        id: tab.id,
-                        urlString: tab.url?.absoluteString,
-                        title: tab.title,
-                        provenance: tab.record.provenance,
-                        profileID: pid
-                    )
+            let profileTabs = tabsByProfile[pid] ?? []
+            let tabEntries = profileTabs.map { tab in
+                ProfileWorkspace.TabEntry(
+                    id: tab.id,
+                    urlString: tab.url?.absoluteString,
+                    title: tab.title,
+                    provenance: tab.record.provenance,
+                    profileID: pid
+                )
+            }
+            let selectedID: UUID? = {
+                if let active = tm.activeTab, active.record.profileID == pid {
+                    return active.id
                 }
-            let selectedID = tm.activeTab.map { t -> UUID? in
-                t.record.profileID == pid ? t.id : nil
-            } ?? nil
+                return profileTabs.first?.id
+            }()
             let existing = registry[pid]
             let closedHistory = existing?.closedTabHistory ?? []
             registry[pid] = ProfileWorkspace(
@@ -184,6 +195,9 @@ extension BrowserWindowController {
             )
         }
         workspaceRegistry = registry
+        let elapsed = Date().timeIntervalSince(start) * 1000
+        os_log("snapshotAllWorkspaces: %d profiles, %d tabs, %.1fms",
+               pm.profiles.count, tm.tabs.count, elapsed)
         return registry
     }
 

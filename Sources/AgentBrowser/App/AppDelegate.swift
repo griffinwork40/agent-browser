@@ -166,6 +166,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if saved {
                 // Step 3 (success): stop agent server, then let Cocoa terminate.
                 agentServer?.stop()
+                quitSaveInFlight = false
                 NSApp.reply(toApplicationShouldTerminate: true)
             } else {
                 // Step 3 (failure): alert user, resume auto-save, cancel quit.

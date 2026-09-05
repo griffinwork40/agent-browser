@@ -67,11 +67,10 @@ struct SessionSnapshot: Codable, Sendable {
             let entry = ProfileWorkspace.TabEntry(tab)
             grouped[tab.profileID, default: []].append(entry)
         }
-        return grouped.mapValues { entries in
-            let pid = entries.first!.profileID
+        return Dictionary(uniqueKeysWithValues: grouped.map { (pid, entries) in
             let selected: UUID? = (pid == activeProfileID) ? selectedTabID : nil
-            return ProfileWorkspace(profileID: pid, tabs: entries, selectedTabID: selected)
-        }
+            return (pid, ProfileWorkspace(profileID: pid, tabs: entries, selectedTabID: selected))
+        })
     }
 }
 

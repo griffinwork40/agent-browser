@@ -6,23 +6,16 @@ import LocalAuthentication
 // MARK: - Keychain Credential Lookup + Atomic DOM Fill
 //
 // Option F: Scoped Keychain + Human-Gated Dispatch.
-// The credential is retrieved from the macOS Keychain via SecItemCopyMatching
-// and injected directly into the WKWebView via JavaScript -- the secret never
-// appears in any HTTP response, MCP payload, or model context window.
-//
-// The OS displays a native permission dialog before returning the credential
-// (kSecUseAuthenticationContext = LAContext with interactionNotAllowed = false),
-// so the OS displays a native Touch ID / password dialog before returning the credential.
+// Credential retrieved via SecItemCopyMatching, injected into the WKWebView via JS.
+// Never appears in any HTTP response, MCP payload, or model context window.
+// OS shows a native Touch ID / password dialog before returning the credential.
 
 extension BrowserAutomationService {
 
     // MARK: - Public API
 
-    /// Fill a form field with a credential from the macOS Keychain.
-    /// The credential is looked up and injected directly into the DOM via the
-    /// JS bridge. It is never included in any response payload or model context.
-    /// Note: Swift `String` provides no deterministic secure-erase guarantee;
-    /// the credential value resides in process memory until ARC reclaims it.
+    /// Fill a form field from the Keychain. Credential is never in any response payload.
+    /// Note: Swift String provides no deterministic secure-erase; value lives in ARC memory.
     func fillFromKeychainCallback(
         tabId: String,
         elementId: String,
@@ -36,9 +29,7 @@ extension BrowserAutomationService {
             return
         }
 
-        // Step 1: Look up the credential from the Keychain OFF the main thread.
-        // SecItemCopyMatching with interactionNotAllowed=false blocks until the
-        // user responds to Touch ID / password dialog -- must not freeze the UI.
+        // Step 1: Keychain lookup off main thread — SecItemCopyMatching blocks on OS dialog.
         DispatchQueue.global(qos: .userInitiated).async {
             let lookup = self.keychainLookup(
                 domain: domain,
@@ -60,12 +51,28 @@ extension BrowserAutomationService {
                 return
             }
 
-            // Step 2: Inject the credential directly into the DOM via the JS bridge.
-            // Use callAsyncJavaScript with structured arguments so the credential is
-            // passed as a data binding, never interpolated into JS source code.
-            // WKWebView calls must happen on the main thread.
-            let script = "return window.__agentBrowser.fill(elementId, value)"
+            // Step 2: Inject via JS bridge on main thread.
+            // markKeychainFilled suppresses previousValue for this element (A5).
+            let script = """
+                window.__agentBrowser.markKeychainFilled(elementId);
+                return window.__agentBrowser.fill(elementId, value)
+                """
             DispatchQueue.main.async {
+                // A4: verify origin before injection; fail closed on nil URL.
+                guard let currentURL = tab.url else {
+                    completion(.failure(
+                        code: ErrorCode.navigationError,
+                        message: "Tab has no committed URL; fill cancelled (A4)"
+                    ))
+                    return
+                }
+                guard Self.hostMatches(currentURL: currentURL, requestedDomain: domain) else {
+                    completion(.failure(
+                        code: ErrorCode.navigationError,
+                        message: "Tab navigated to a different origin; fill cancelled (A4)"
+                    ))
+                    return
+                }
                 tab.webView.callAsyncJavaScript(
                     script,
                     arguments: ["elementId": elementId, "value": credential],
@@ -106,8 +113,7 @@ extension BrowserAutomationService {
             return .failure(code: ErrorCode.tabNotFound, message: "No tab with id: \(tabId)")
         }
 
-        // Run keychainLookup off the main thread -- SecItemCopyMatching with
-        // interactionNotAllowed=false blocks until user responds to the OS dialog.
+        // Keychain lookup off main thread — blocks on OS dialog.
         let lookup: (value: String?, error: String?) = await withCheckedContinuation { cont in
             DispatchQueue.global(qos: .userInitiated).async {
                 let result = self.keychainLookup(
@@ -127,21 +133,26 @@ extension BrowserAutomationService {
             return .failure(code: ErrorCode.keychainError, message: "No credential found")
         }
 
-        // A4 — Document-identity check: verify the tab's committed URL host still
-        // matches the domain used for the Keychain lookup, immediately before injection.
-        // Cross-origin redirects or tab navigation during lookup cancel safely.
-        if let currentURL = tab.url {
-            guard Self.hostMatches(currentURL: currentURL, requestedDomain: domain) else {
-                return .failure(
-                    code: ErrorCode.navigationError,
-                    message: "Tab navigated to a different origin; fill cancelled (A4)"
-                )
-            }
+        // A4: verify origin before injection; fail closed on nil URL.
+        guard let currentURL = tab.url else {
+            return .failure(
+                code: ErrorCode.navigationError,
+                message: "Tab has no committed URL; fill cancelled (A4)"
+            )
+        }
+        guard Self.hostMatches(currentURL: currentURL, requestedDomain: domain) else {
+            return .failure(
+                code: ErrorCode.navigationError,
+                message: "Tab navigated to a different origin; fill cancelled (A4)"
+            )
         }
 
-        // Use callAsyncJavaScript with structured arguments so the credential is
-        // passed as a data binding, never interpolated into JS source code.
-        let script = "return window.__agentBrowser.fill(elementId, value)"
+        // markKeychainFilled suppresses previousValue (A5). Credential passed as
+        // a structured argument binding — never interpolated into JS source.
+        let script = """
+            window.__agentBrowser.markKeychainFilled(elementId);
+            return window.__agentBrowser.fill(elementId, value)
+            """
         do {
             let raw = try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Any?, Error>) in
                 tab.webView.callAsyncJavaScript(
@@ -188,34 +199,15 @@ extension BrowserAutomationService {
 
     // MARK: - Keychain Lookup
 
-    /// Look up a credential from the macOS Keychain.
-    /// Returns the credential string or nil + error message.
-    /// The OS will display a native permission dialog before returning.
-    ///
-    /// This query intentionally does NOT restrict `kSecAttrAccessGroup`, which means
-    /// it searches across all keychain groups accessible to this process. This is by
-    /// design: the OS shows a native Touch ID / password dialog for each access,
-    /// and that permission dialog serves as the access-control boundary — not
-    /// app-scoped keychain group filtering. Restricting to a single group would
-    /// silently exclude credentials stored by the browser or password manager.
-    ///
-    /// - Parameters:
-    ///   - domain: The server/domain to scope the keychain query.
-    ///   - account: Optional account name to pin the query to a specific entry.
-    ///     For `.username` lookups where `account` is nil and multiple entries exist
-    ///     for the domain, pass `account` from a prior `keychainAccounts` call;
-    ///     omitting it returns one entry non-deterministically (OS-defined order).
-    ///   - type: Whether to retrieve the password data or the account name.
+    /// Look up a credential from the Keychain. OS shows Touch ID / password dialog.
+    /// Does not restrict kSecAttrAccessGroup — the OS dialog is the access boundary.
     private func keychainLookup(
         domain: String,
         account: String?,
         type: KeychainCredentialType
     ) -> (value: String?, error: String?) {
-        // LAContext allows the OS to show the auth UI (Touch ID / password dialog)
         let context = LAContext()
         context.interactionNotAllowed = false
-
-        // Base attributes shared by both paths.
         var base: [String: Any] = [
             kSecClass as String: kSecClassInternetPassword,
             kSecAttrServer as String: domain,
@@ -225,21 +217,16 @@ extension BrowserAutomationService {
             base[kSecAttrAccount as String] = account
         }
 
-        // Build a type-specific query rather than mutating a shared dict.
         let query: [String: Any]
         switch type {
         case .password:
-            // Return raw password bytes; decode as UTF-8 below.
             query = base.merging([
                 kSecReturnData as String: true,
                 kSecMatchLimit as String: kSecMatchLimitOne,
             ]) { _, new in new }
 
         case .username:
-            // Return attributes (kSecAttrAccount) only -- never request password data.
-            // kSecMatchLimitOne is intentional: when account==nil and multiple entries
-            // exist for the domain the OS picks one non-deterministically. Callers that
-            // need a specific account should pass one (sourced from keychainAccounts).
+            // kSecMatchLimitOne: non-deterministic when multiple entries exist for domain.
             query = base.merging([
                 kSecReturnData as String: false,
                 kSecReturnAttributes as String: true,
@@ -270,12 +257,8 @@ extension BrowserAutomationService {
         }
     }
 
-    /// List available accounts for a domain (no passwords returned).
-    /// Used by auth.accounts to let the agent know which accounts exist.
-    /// Uses interactionNotAllowed = true because this reads only metadata
-    /// (account names, not secrets) — no auth UI is needed or appropriate.
-    /// If some items are interaction-protected, errSecInteractionNotAllowed is
-    /// handled gracefully by returning whatever accounts were accessible.
+    /// List available accounts for a domain (no passwords). interactionNotAllowed=true
+    /// since we only read metadata. Protected items return empty gracefully.
     func keychainAccounts(domain: String) -> (accounts: [String]?, error: String?) {
         let context = LAContext()
         context.interactionNotAllowed = true
@@ -291,15 +274,8 @@ extension BrowserAutomationService {
         var result: AnyObject?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
 
-        if status == errSecItemNotFound {
-            return ([], nil)
-        }
-
-        // If interaction is required for protected items, return what we got.
-        // A nil result here just means no unprotected attributes were accessible.
-        if status == errSecInteractionNotAllowed {
-            return ([], nil)
-        }
+        if status == errSecItemNotFound { return ([], nil) }
+        if status == errSecInteractionNotAllowed { return ([], nil) }
 
         guard status == errSecSuccess else {
             return (nil, keychainErrorMessage(status))
@@ -310,8 +286,7 @@ extension BrowserAutomationService {
         }
 
         let accounts = items.compactMap { $0[kSecAttrAccount as String] as? String }
-        // Deduplicate (same account may have multiple entries)
-        return (Array(Set(accounts)).sorted(), nil)
+        return (Array(Set(accounts)).sorted(), nil) // deduplicate
     }
 
     // MARK: - Helpers

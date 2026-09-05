@@ -124,7 +124,7 @@ final class ProfileManager {
     /// - Returns: `true` on success, `false` if validation fails.
     @discardableResult
     func renameProfile(id: UUID, to newName: String) -> Bool {
-        let trimmed = newName.trimmingCharacters(in: .whitespaces)
+        let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
         // Duplicate-name check: allow the same profile to keep its name.
         let isDuplicate = profiles.contains { $0.name == trimmed && $0.id != id }
@@ -139,7 +139,7 @@ final class ProfileManager {
 
     /// Returns `true` when `name` is available (non-empty, not taken by another profile).
     func isNameAvailable(_ name: String, excludingID: UUID? = nil) -> Bool {
-        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
         return !profiles.contains { $0.name == trimmed && $0.id != excludingID }
     }

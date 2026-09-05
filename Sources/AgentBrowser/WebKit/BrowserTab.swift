@@ -160,38 +160,20 @@ final class BrowserTab: Identifiable {
         }
     }
 
+    /// Creates a base WKWebViewConfiguration with media and fullscreen settings.
+    ///
+    /// The automation bridge scripts (automation-bridge-relevance.js and
+    /// automation-bridge.js) are NOT injected here. They are injected exclusively
+    /// by `ProfileManager.makeConfiguration(for:)`, which owns per-profile
+    /// WKWebsiteDataStore setup. Injecting the bridge here would result in
+    /// double-injection (once per BrowserTab init, once per ProfileManager config),
+    /// leading to duplicate AB._generation resets and undefined bridge behaviour.
     private static func makeDefaultConfiguration() -> WKWebViewConfiguration {
         let config = WKWebViewConfiguration()
         config.preferences.isElementFullscreenEnabled = true
         // Allow inline media playback
         config.mediaTypesRequiringUserActionForPlayback = []
         config.allowsAirPlayForMediaPlayback = true
-
-        // Inject the automation bridge into every page for element inspection,
-        // click, fill, press, select, and wait operations.
-        // Runs in an isolated content world ("AgentBridge") so page JS cannot
-        // access window.__agentBrowser or tamper with the bridge.
-        // Relevance helpers must be injected first so AB._scoreElement etc. are
-        // available when the main bridge initialises element collection.
-        if let relevanceJS = Self.loadScript(named: "automation-bridge-relevance") {
-            let relevanceScript = WKUserScript(
-                source: relevanceJS,
-                injectionTime: .atDocumentEnd,
-                forMainFrameOnly: true,
-                in: .world(name: "AgentBridge")
-            )
-            config.userContentController.addUserScript(relevanceScript)
-        }
-        if let bridgeJS = Self.loadAutomationBridge() {
-            let script = WKUserScript(
-                source: bridgeJS,
-                injectionTime: .atDocumentEnd,
-                forMainFrameOnly: true,
-                in: .world(name: "AgentBridge")
-            )
-            config.userContentController.addUserScript(script)
-        }
-
         return config
     }
 

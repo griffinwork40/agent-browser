@@ -8,6 +8,11 @@
   const AB = window.__agentBrowser = window.__agentBrowser || {};
   AB._generation = 0;
 
+  // Tracks element IDs whose value was injected via Keychain fill.
+  // Prevents transitive credential leaks: previousValue is suppressed for
+  // any element that was keychain-filled, even after subsequent non-fill writes.
+  const _keychainFilledIds = new Set();
+
   // --- Helpers ---
 
   function hexId() {
@@ -241,6 +246,11 @@
     });
   };
 
+  /// Mark an element as keychain-filled so future fill() calls suppress previousValue.
+  AB.markKeychainFilled = function (handleId) {
+    _keychainFilledIds.add(handleId);
+  };
+
   AB.resolveElement = function (handleId) {
     return document.querySelector(`[data-agentbrowser-id="${CSS.escape(handleId)}"]`) || null;
   };
@@ -282,10 +292,12 @@
     if (!isVisible(el)) return JSON.stringify({ error: 'ELEMENT_NOT_VISIBLE' });
 
     const tag = el.tagName.toUpperCase();
-    // Never return the previous value for password fields — doing so would leak
-    // credential data back to API callers. (A5 security boundary)
+    // Never return the previous value for password fields or keychain-filled
+    // elements — doing so would leak credential data back to API callers.
+    // (A5 security boundary + transitive credential leak prevention)
     const isPasswordField = tag === 'INPUT' && el.type === 'password';
-    const previousValue = isPasswordField ? undefined : (el.value || el.textContent || '');
+    const wasKeychainFilled = _keychainFilledIds.has(el.dataset.agentbrowserId);
+    const previousValue = (isPasswordField || wasKeychainFilled) ? undefined : (el.value || el.textContent || '');
 
     try { el.focus(); } catch (_) {}
 

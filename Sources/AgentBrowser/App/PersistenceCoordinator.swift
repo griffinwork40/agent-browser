@@ -133,11 +133,10 @@ final class PersistenceCoordinator {
                     self.saveSession(from: tm)
                 }
             }
-            // Assign on MainActor; the closure above captures `self` weakly so
-            // we use a separate MainActor block to store the handle.
-            Task { @MainActor [weak self] in
-                self?.pendingAutoSaveTask = task
-            }
+            // Synchronous assignment — Timer fires on RunLoop.main (main thread).
+            // MainActor.assumeIsolated satisfies the compiler's actor-isolation
+            // check without scheduling an additional async hop.
+            MainActor.assumeIsolated { self.pendingAutoSaveTask = task }
         }
     }
 
@@ -165,9 +164,15 @@ final class PersistenceCoordinator {
         activeProfileID: UUID
     ) {
         guard let store = sessionStore else { return }
-        Task {
-            await store.saveWorkspaces(workspaces, activeProfileID: activeProfileID)
+        // Track the task so stopAutoSave() can cancel an in-flight profile-switch
+        // save — otherwise a concurrent save races the quit snapshot.
+        let task = Task {
+            let ok = await store.saveWorkspaces(workspaces, activeProfileID: activeProfileID)
+            if !ok {
+                fputs("PersistenceCoordinator: saveAllWorkspaces failed\n", stderr)
+            }
         }
+        pendingAutoSaveTask = task
     }
 
     /// Awaitable variant used by the quit path (applicationShouldTerminate) so the
