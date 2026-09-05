@@ -56,6 +56,7 @@ enum ErrorCode {
     static let unsupportedElement = "UNSUPPORTED_ELEMENT"
     static let waitTimeout = "WAIT_TIMEOUT"
     static let navigationFailed = "NAVIGATION_FAILED"
+    static let navigationError = "NAVIGATION_ERROR"
     static let invalidArgument = "INVALID_ARGUMENT"
     static let invalidState = "INVALID_STATE"
 }

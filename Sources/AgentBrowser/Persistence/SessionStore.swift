@@ -44,9 +44,34 @@ struct SessionSnapshot: Codable, Sendable {
 
     // MARK: Snapshot root
 
-    let tabs: [TabSnapshot]
-    let selectedTabID: UUID?
-    let savedAt: Date
+    var tabs: [TabSnapshot]
+    var selectedTabID: UUID?
+    var savedAt: Date
+
+    /// Per-profile workspace snapshots. Added in v2; absent in legacy files.
+    /// Keyed by profile UUID string (Codable requires String keys in Dicts).
+    var workspaces: [String: ProfileWorkspace]?
+
+    // MARK: - Profile workspace helpers
+
+    /// Returns the workspace for `profileID`, or nil if none has been saved.
+    func workspace(for profileID: UUID) -> ProfileWorkspace? {
+        workspaces?[profileID.uuidString]
+    }
+
+    /// Returns all workspaces built from the legacy flat `tabs` array,
+    /// grouped by each tab's `profileID`. Used when `workspaces` is absent.
+    func migratedWorkspaces(activeProfileID: UUID) -> [UUID: ProfileWorkspace] {
+        var grouped: [UUID: [ProfileWorkspace.TabEntry]] = [:]
+        for tab in tabs {
+            let entry = ProfileWorkspace.TabEntry(tab)
+            grouped[tab.profileID, default: []].append(entry)
+        }
+        return Dictionary(uniqueKeysWithValues: grouped.map { (pid, entries) in
+            let selected: UUID? = (pid == activeProfileID) ? selectedTabID : nil
+            return (pid, ProfileWorkspace(profileID: pid, tabs: entries, selectedTabID: selected))
+        })
+    }
 }
 
 // MARK: - SessionStore
@@ -73,6 +98,47 @@ actor SessionStore {
         )
         guard let data = try? JSONEncoder().encode(snapshot) else { return }
         try? data.write(to: fileURL, options: .atomic)
+    }
+
+    /// Atomically writes per-profile workspaces to disk alongside the legacy flat array.
+    ///
+    /// The legacy `tabs` + `selectedTabID` fields are populated from `activeWorkspace`
+    /// so that any reader without workspace support still sees a usable session.
+    ///
+    /// - Returns: `true` if the write succeeded; `false` if encode or write failed.
+    ///   Callers on the quit path should treat `false` as a write failure and may
+    ///   log or surface the error before allowing termination to proceed.
+    @discardableResult
+    func saveWorkspaces(
+        _ workspaces: [UUID: ProfileWorkspace],
+        activeProfileID: UUID
+    ) -> Bool {
+        let active = workspaces[activeProfileID]
+        let legacyTabs: [SessionSnapshot.TabSnapshot] = (active?.tabs ?? [])
+            .map(\.asTabSnapshot)
+        let legacySelected = active?.selectedTabID
+
+        // String-keyed dict for Codable conformance.
+        let coded = Dictionary(uniqueKeysWithValues:
+            workspaces.map { (k, v) in (k.uuidString, v) }
+        )
+        var snapshot = SessionSnapshot(
+            tabs: legacyTabs,
+            selectedTabID: legacySelected,
+            savedAt: Date()
+        )
+        snapshot.workspaces = coded
+        guard let data = try? JSONEncoder().encode(snapshot) else { return false }
+        do {
+            try data.write(to: fileURL, options: .atomic)
+            return true
+        } catch {
+            // Surface write failures via stderr so crash logs and test assertions
+            // can detect them. Silent swallowing was the prior behaviour; callers
+            // that do not check the return value are unaffected.
+            fputs("SessionStore: workspace write failed: \(error)\n", stderr)
+            return false
+        }
     }
 
     /// Deletes the saved session file (e.g. after a fresh-start launch).

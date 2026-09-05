@@ -1,0 +1,14 @@
+# Execution checkpoint 2026-09-05
+
+Status: PARTIAL IMPLEMENTATION, NOT SHIP-READY. Branch afk/profiles-auth-integration in this managed worktree. All implementation changes remain uncommitted. Original main checkout, stash and user data untouched.
+
+Implemented code: profile workspace model, per-profile snapshot persistence and startup wiring; named profile creation and rename UI; workspace-preserving switch; awaited quit persistence with write-failure result, cancelled termination on failure and duplicate-quit guard. Partial auth host guard/password previous-value redaction are NOT a completed security boundary.
+
+Verification: prior coordinator inspected full test summaries: 30 XCTest +129 browser Swift Testing +21 MCP Swift Testing =180 passing tests, zero failures; swift build passed; git diff --check passed before final quit-failure edit. Latest worker reports same 180 passing after final edit; receipts /tmp/agent-browser-profile-final2-tests.log and /tmp/agent-browser-profile-final2-build.log. Do not confuse final runner's 21 with entire suite.
+
+Remaining gates: independent final review of integrated changes; full runtime profile preservation/selected-tab/closed-history and restart validation; real WKWebView isolated fixture tests; quit coordinator regression test with injected persistence/termination boundary; verify autosave cancellation/serialization (cancellation alone is cooperative, not proof stale saves cannot write); production code-line ceiling recheck on final diff; auth authorization/origin/document-race/read-surface security testing; provider decision and explicit permission before any real credential access. No GUI/provider behavior claimed validated. Model persistence tests do not prove Cocoa termination behavior.
+
+Uncommitted modified paths under Sources/AgentBrowser: App/AppDelegate.swift, App/PersistenceCoordinator.swift, Automation/KeychainFill.swift, Automation/Protocol.swift, Features/Profiles/ProfilePickerView.swift, Features/Profiles/ProfileRowView.swift, Features/Sidebar/TabSidebarView.swift, Persistence/SessionStore.swift, WebKit/ProfileManager.swift, WebKit/UserScripts/automation-bridge.js, Window/BrowserWindowController+Actions.swift, Window/BrowserWindowController.swift.
+New files: Sources/AgentBrowser/BrowserCore/ProfileWorkspace.swift; Sources/AgentBrowser/Window/BrowserWindowController+ProfileSwitch.swift; Tests/AgentBrowserTests/ProfileRenameTests.swift; Tests/AgentBrowserTests/ProfileWorkspaceTests.swift; Tests/AgentBrowserTests/SessionStorePersistenceTests.swift; local .afk/recon reports.
+
+Resume: refresh git status; independently review and test final profile persistence/quit state ordering with fixture state. Fix demonstrated bugs, then perform controlled GUI validation without user-data access. Do not blindly commit all dirty files or treat partial auth patches as complete. Keep integration worktree until work durably retained; never delete active cwd.

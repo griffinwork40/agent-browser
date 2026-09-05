@@ -197,19 +197,52 @@ final class BrowserWindowController: NSWindowController {
         sidebarHostingController?.rootView = makeSidebarView()
     }
 
-    /// Switches to the given profile, closing all existing tabs and opening
-    /// a fresh tab bound to the new profile's WKWebsiteDataStore.
+    /// Switches to the given profile, preserving both profiles' workspaces (P2).
+    ///
+    /// Delegates to `performWorkspacePreservingSwitch(to:)` defined in
+    /// `BrowserWindowController+ProfileSwitch.swift`. Same-profile switching is a no-op.
     func performProfileSwitch(to profileID: UUID) {
-        profileManager.switchTo(profileID: profileID)
-        let existing = tabManager.tabs
-        let newTab = tabManager.createTab(profileID: profileID)
-        tabManager.select(tab: newTab)
-        for tab in existing {
-            tabManager.closeTab(tab)
+        performWorkspacePreservingSwitch(to: profileID)
+    }
+
+    /// Shows a naming dialog, then creates a profile with the entered name.
+    ///
+    /// Replaces the hardcoded "New Profile" creation (P1).
+    func promptAndCreateProfile() {
+        let alert = NSAlert()
+        alert.messageText = "New Profile"
+        alert.informativeText = "Enter a name for the new profile."
+        alert.addButton(withTitle: "Create")
+        alert.addButton(withTitle: "Cancel")
+
+        let nameField = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        nameField.placeholderString = "Profile name"
+        nameField.stringValue = ""
+        alert.accessoryView = nameField
+
+        guard let window else { return }
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard let self else { return }
+            guard response == .alertFirstButtonReturn else { return }
+            let name = nameField.stringValue.trimmingCharacters(in: .whitespaces)
+            // P1: reject empty or duplicate names; re-prompt instead of using a default.
+            guard !name.isEmpty else {
+                self.promptAndCreateProfile()
+                return
+            }
+            guard self.profileManager.isNameAvailable(name) else {
+                let errAlert = NSAlert()
+                errAlert.messageText = "Name Already Taken"
+                errAlert.informativeText = "\"\(name)\" is already used by another profile. Choose a different name."
+                errAlert.addButton(withTitle: "OK")
+                errAlert.beginSheetModal(for: window) { [weak self] _ in
+                    self?.promptAndCreateProfile()
+                }
+                return
+            }
+            self.profileManager.createProfile(name: name)
+            self.updateSidebar()
         }
-        tabManager.clearClosedTabStack()
-        syncDisplayedTab()
-        updateSidebar()
     }
 
     private func makeSidebarView() -> TabSidebarView {
@@ -227,6 +260,17 @@ final class BrowserWindowController: NSWindowController {
             },
             onClose: { [weak self] tab in
                 guard let self else { return }
+                // P2: record closed tab into this profile's workspace history before removal.
+                let entry = ProfileWorkspace.TabEntry(
+                    id: tab.id,
+                    urlString: tab.url?.absoluteString,
+                    title: tab.title,
+                    provenance: tab.record.provenance,
+                    profileID: tab.record.profileID
+                )
+                let pid = tab.record.profileID
+                let existing = self.workspaceRegistry[pid] ?? ProfileWorkspace.empty(for: pid)
+                self.workspaceRegistry[pid] = existing.addingClosed(entry)
                 self.tabManager.closeTab(tab)
                 if self.tabManager.tabs.isEmpty {
                     let newTab = self.tabManager.createTab()
@@ -251,8 +295,11 @@ final class BrowserWindowController: NSWindowController {
             },
             onCreateProfile: { [weak self] in
                 guard let self else { return }
-                self.profileManager.createProfile(name: "New Profile")
-                self.updateSidebar()
+                self.promptAndCreateProfile()
+            },
+            onRenameProfile: { [weak self] id, newName -> Bool in
+                guard let self else { return false }
+                return self.profileManager.renameProfile(id: id, to: newName)
             }
         )
     }

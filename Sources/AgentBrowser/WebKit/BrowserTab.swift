@@ -160,48 +160,36 @@ final class BrowserTab: Identifiable {
         }
     }
 
+    /// Creates a base WKWebViewConfiguration with media and fullscreen settings.
+    ///
+    /// The automation bridge scripts (automation-bridge-relevance.js and
+    /// automation-bridge.js) are NOT injected here. They are injected exclusively
+    /// by `ProfileManager.makeConfiguration(for:)`, which owns per-profile
+    /// WKWebsiteDataStore setup. Injecting the bridge here would result in
+    /// double-injection (once per BrowserTab init, once per ProfileManager config),
+    /// leading to duplicate AB._generation resets and undefined bridge behaviour.
     private static func makeDefaultConfiguration() -> WKWebViewConfiguration {
         let config = WKWebViewConfiguration()
         config.preferences.isElementFullscreenEnabled = true
         // Allow inline media playback
         config.mediaTypesRequiringUserActionForPlayback = []
         config.allowsAirPlayForMediaPlayback = true
-
-        // Inject the automation bridge into every page for element inspection,
-        // click, fill, press, select, and wait operations.
-        // Runs in an isolated content world ("AgentBridge") so page JS cannot
-        // access window.__agentBrowser or tamper with the bridge.
-        if let bridgeJS = Self.loadAutomationBridge() {
-            let script = WKUserScript(
-                source: bridgeJS,
-                injectionTime: .atDocumentEnd,
-                forMainFrameOnly: true,
-                in: .world(name: "AgentBridge")
-            )
-            config.userContentController.addUserScript(script)
-        }
-
         return config
     }
 
-    /// Load the automation-bridge.js from the bundle or filesystem.
-    /// Checks: SPM .copy bundle path, main bundle, working directory fallback.
-    private static func loadAutomationBridge() -> String? {
-        // SPM .copy preserves the subdirectory structure
-        if let url = Bundle.module.url(forResource: "automation-bridge", withExtension: "js",
+    /// Load a named JS file from UserScripts (bundle or dev fallback).
+    private static func loadScript(named name: String) -> String? {
+        if let url = Bundle.module.url(forResource: name, withExtension: "js",
                                         subdirectory: "UserScripts") {
             return try? String(contentsOf: url, encoding: .utf8)
         }
-        if let url = Bundle.main.url(forResource: "automation-bridge", withExtension: "js") {
+        if let url = Bundle.main.url(forResource: name, withExtension: "js") {
             return try? String(contentsOf: url, encoding: .utf8)
         }
 #if DEBUG
-        // Development-only fallback: load from cwd-relative source path.
-        // Guarded by #if DEBUG so release builds cannot be attacked by
-        // placing a malicious file at these relative paths.
         let devPaths = [
-            "Sources/AgentBrowser/WebKit/UserScripts/automation-bridge.js",
-            "../Sources/AgentBrowser/WebKit/UserScripts/automation-bridge.js",
+            "Sources/AgentBrowser/WebKit/UserScripts/\(name).js",
+            "../Sources/AgentBrowser/WebKit/UserScripts/\(name).js",
         ]
         for path in devPaths {
             if FileManager.default.fileExists(atPath: path) {
@@ -209,7 +197,13 @@ final class BrowserTab: Identifiable {
             }
         }
 #endif
-        print("[BrowserTab] Warning: automation-bridge.js not found")
+        print("[BrowserTab] Warning: \(name).js not found")
         return nil
+    }
+
+    /// Load the automation-bridge.js from the bundle or filesystem.
+    /// Checks: SPM .copy bundle path, main bundle, working directory fallback.
+    private static func loadAutomationBridge() -> String? {
+        loadScript(named: "automation-bridge")
     }
 }
