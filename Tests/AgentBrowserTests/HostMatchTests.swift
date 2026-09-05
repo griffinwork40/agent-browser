@@ -92,4 +92,36 @@ struct HostMatchTests {
             requestedDomain: "GOOGLE.COM"
         ))
     }
+
+    @Test("Deep subdomain matches apex domain")
+    func deepSubdomainMatch() {
+        #expect(BrowserAutomationService.hostMatches(
+            currentURL: url("https://login.accounts.google.com/"),
+            requestedDomain: "google.com"
+        ))
+    }
+
+    @Test("Partial prefix attack is rejected")
+    func partialPrefixAttack() {
+        #expect(!BrowserAutomationService.hostMatches(
+            currentURL: url("https://notgoogle.com/"),
+            requestedDomain: "google.com"
+        ))
+    }
+
+    @Test("Port-bearing URL host matches domain without port")
+    func hostWithPort() {
+        #expect(BrowserAutomationService.hostMatches(
+            currentURL: url("https://accounts.google.com:443/signin"),
+            requestedDomain: "google.com"
+        ))
+    }
+
+    @Test("Empty requested domain does not match")
+    func emptyRequestedDomain() {
+        #expect(!BrowserAutomationService.hostMatches(
+            currentURL: url("https://example.com/"),
+            requestedDomain: ""
+        ))
+    }
 }

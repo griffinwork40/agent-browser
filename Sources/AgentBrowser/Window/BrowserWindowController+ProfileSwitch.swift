@@ -93,7 +93,8 @@ extension BrowserWindowController {
                 tabManager.createTab(
                     url: entry.url,
                     provenance: .restored(originalAgentID: nil, originalSessionTag: nil),
-                    profileID: profileID
+                    profileID: profileID,
+                    id: entry.id
                 )
             }
             // Select the previously active tab.

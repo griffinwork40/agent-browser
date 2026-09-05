@@ -52,10 +52,11 @@ final class TabManager {
     func createTab(
         url: URL? = nil,
         provenance: TabProvenance = .human,
-        profileID: UUID? = nil
+        profileID: UUID? = nil,
+        id: UUID? = nil
     ) -> BrowserTab {
         let resolvedProfileID = profileID ?? profileManager.activeProfileID
-        let record = TabRecord(provenance: provenance, profileID: resolvedProfileID)
+        let record = TabRecord(id: id ?? UUID(), provenance: provenance, profileID: resolvedProfileID)
         let config = profileManager.makeConfiguration(for: resolvedProfileID)
         let tab = BrowserTab(record: record, configuration: config)
         tabs.append(tab)

@@ -131,4 +131,18 @@ final class ProfileRenameTests: XCTestCase {
         XCTAssertEqual(pm2.profiles.count, 2)
         XCTAssertTrue(pm2.profiles.contains { $0.name == "Work" })
     }
+
+    @MainActor
+    func testRenamePersists() {
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rename-persist-\(UUID().uuidString)")
+        let url = tmp.appendingPathComponent("profiles.json")
+        let pm1 = ProfileManager(storageURL: url)
+        let id = pm1.profiles[0].id
+        _ = pm1.renameProfile(id: id, to: "Renamed")
+
+        // Re-read from disk.
+        let pm2 = ProfileManager(storageURL: url)
+        XCTAssertEqual(pm2.profiles.first?.name, "Renamed")
+    }
 }

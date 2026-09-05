@@ -68,7 +68,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         tm.createTab(
                             url: entry.url,
                             provenance: .restored(originalAgentID: nil, originalSessionTag: nil),
-                            profileID: entry.profileID
+                            profileID: entry.profileID,
+                            id: entry.id
                         )
                     }
                 }

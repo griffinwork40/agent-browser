@@ -169,7 +169,7 @@
         text: truncate((el.innerText || el.textContent || '').trim(), 100),
         placeholder: el.placeholder || null,
         inputType: inputType,
-        value: ('value' in el && el.type !== 'password') ? el.value : undefined,
+        value: ('value' in el && el.type !== 'password' && !_keychainFilledIds.has(el.dataset.agentbrowserId)) ? el.value : undefined,
         href: el.href || null,
         disabled: isDisabled || false,
         checked: isChecked,

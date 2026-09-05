@@ -196,6 +196,83 @@ final class ProfileWorkspaceTests: XCTestCase {
         XCTAssertEqual(restored?.selectedTabID, tabEntry.id)
     }
 
+    // MARK: - Tab-ID preservation through restore
+
+    /// Regression: createTab must preserve the saved tab ID so
+    /// tabManager.tab(for: savedSelectedTabID) resolves after restoration.
+    @MainActor
+    func testRestoredTabPreservesSavedID() {
+        let pm = ProfileManager(
+            storageURL: FileManager.default.temporaryDirectory
+                .appendingPathComponent("tabid-test-\(UUID().uuidString)")
+                .appendingPathComponent("profiles.json")
+        )
+        let tm = TabManager(profileManager: pm)
+        let profileID = pm.activeProfileID
+
+        // Create a workspace with a known tab ID.
+        let savedTabID = UUID()
+        let entry = ProfileWorkspace.TabEntry(
+            id: savedTabID,
+            urlString: "https://example.com",
+            title: "Saved Tab",
+            provenance: .human,
+            profileID: profileID
+        )
+
+        // Restore through createTab with the saved ID.
+        tm.createTab(
+            url: entry.url,
+            provenance: .restored(originalAgentID: nil, originalSessionTag: nil),
+            profileID: profileID,
+            id: entry.id
+        )
+
+        // The restored tab must be findable by the saved ID.
+        let found = tm.tab(for: savedTabID)
+        XCTAssertNotNil(found, "tab(for: savedID) must resolve after restore with id: parameter")
+        XCTAssertEqual(found?.id, savedTabID)
+    }
+
+    /// Verify that selectedTabID lookup works after restoring a full workspace.
+    @MainActor
+    func testRestoredWorkspaceSelectedTabResolves() {
+        let pm = ProfileManager(
+            storageURL: FileManager.default.temporaryDirectory
+                .appendingPathComponent("tabid-sel-test-\(UUID().uuidString)")
+                .appendingPathComponent("profiles.json")
+        )
+        let tm = TabManager(profileManager: pm)
+        let profileID = pm.activeProfileID
+
+        let tab1ID = UUID()
+        let tab2ID = UUID()
+        let entries = [
+            ProfileWorkspace.TabEntry(id: tab1ID, urlString: nil, title: "Tab 1",
+                                      provenance: .human, profileID: profileID),
+            ProfileWorkspace.TabEntry(id: tab2ID, urlString: nil, title: "Tab 2",
+                                      provenance: .human, profileID: profileID),
+        ]
+        let ws = ProfileWorkspace(profileID: profileID, tabs: entries, selectedTabID: tab2ID)
+
+        // Restore all tabs with preserved IDs.
+        for entry in ws.tabs {
+            tm.createTab(
+                url: entry.url,
+                provenance: .restored(originalAgentID: nil, originalSessionTag: nil),
+                profileID: profileID,
+                id: entry.id
+            )
+        }
+
+        // Select by saved selectedTabID — must resolve.
+        if let selID = ws.selectedTabID, let tab = tm.tab(for: selID) {
+            tm.select(tab: tab)
+        }
+        XCTAssertEqual(tm.activeTab?.id, tab2ID,
+                        "selectedTabID from workspace must select the correct restored tab")
+    }
+
     // MARK: - Helpers
 
     private func makeEntry(profileID: UUID, title: String = "Tab") -> ProfileWorkspace.TabEntry {
