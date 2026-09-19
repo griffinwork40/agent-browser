@@ -138,7 +138,8 @@ struct MCPTools {
                     "tab_id": prop("string", "Tab ID from browser_tabs")
                  ],
                  required: ["tab_id"]),
-        ]
+
+        ] + navigationDefinitions()
     }
 
     /// Dispatch a tool call to the browser API. Returns (content array, isError).
@@ -244,6 +245,54 @@ struct MCPTools {
             }
             return callBrowser(method: "auth.handoffStatus", params: ["id": tabId])
 
+        // MARK: - Tab Management
+
+        case "browser_close_tab":
+            guard let tabId = args["tab_id"] as? String else {
+                return toolError("Missing required argument: tab_id")
+            }
+            return callBrowser(method: "tabs.close", params: ["id": tabId])
+
+        case "browser_switch_tab":
+            guard let tabId = args["tab_id"] as? String else {
+                return toolError("Missing required argument: tab_id")
+            }
+            return callBrowser(method: "tabs.switch", params: ["id": tabId])
+
+        // MARK: - Navigation
+
+        case "browser_navigate":
+            guard let tabId = args["tab_id"] as? String, let url = args["url"] as? String else {
+                return toolError("Missing required arguments: tab_id, url")
+            }
+            return callBrowser(method: "tabs.navigate", params: ["id": tabId, "url": url])
+
+        case "browser_back":
+            guard let tabId = args["tab_id"] as? String else {
+                return toolError("Missing required argument: tab_id")
+            }
+            return callBrowser(method: "page.back", params: ["id": tabId])
+
+        case "browser_forward":
+            guard let tabId = args["tab_id"] as? String else {
+                return toolError("Missing required argument: tab_id")
+            }
+            return callBrowser(method: "page.forward", params: ["id": tabId])
+
+        case "browser_reload":
+            guard let tabId = args["tab_id"] as? String else {
+                return toolError("Missing required argument: tab_id")
+            }
+            return callBrowser(method: "page.reload", params: ["id": tabId])
+
+        // MARK: - Page Metadata
+
+        case "browser_read_metadata":
+            guard let tabId = args["tab_id"] as? String else {
+                return toolError("Missing required argument: tab_id")
+            }
+            return callBrowser(method: "tabs.get", params: ["id": tabId])
+
         default:
             return toolError("Unknown tool: \(name)")
         }
@@ -251,13 +300,14 @@ struct MCPTools {
 
     // MARK: - Helpers
 
-    private func tool(_ name: String, desc: String, props: [String: Any], required: [String] = []) -> [String: Any] {
+    // Internal so extensions in other files (MCPToolsNavigation.swift) can access them.
+    func tool(_ name: String, desc: String, props: [String: Any], required: [String] = []) -> [String: Any] {
         var schema: [String: Any] = ["type": "object", "properties": props, "additionalProperties": false]
         if !required.isEmpty { schema["required"] = required }
         return ["name": name, "description": desc, "inputSchema": schema]
     }
 
-    private func prop(_ type: String, _ desc: String) -> [String: Any] {
+    func prop(_ type: String, _ desc: String) -> [String: Any] {
         ["type": type, "description": desc]
     }
 

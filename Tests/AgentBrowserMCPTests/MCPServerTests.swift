@@ -9,11 +9,11 @@ struct MCPServerTests {
 
     // MARK: - Tool Definitions
 
-    @Test("definitions returns 17 tools")
+    @Test("definitions returns 24 tools")
     func toolCount() {
         let tools = MCPTools()
         let defs = tools.definitions()
-        #expect(defs.count == 17)
+        #expect(defs.count == 24)
     }
 
     @Test("every tool has name, description, and inputSchema")
@@ -39,7 +39,11 @@ struct MCPServerTests {
             "browser_auth_status", "browser_auth_accounts",
             "browser_fill_from_keychain",
             "browser_request_auth", "browser_auth_completed",
-            "browser_handoff_status"
+            "browser_handoff_status",
+            // Phase 2: tab management and navigation
+            "browser_close_tab", "browser_switch_tab",
+            "browser_navigate", "browser_back", "browser_forward",
+            "browser_reload", "browser_read_metadata"
         ]
         #expect(Set(names) == Set(expected))
     }
