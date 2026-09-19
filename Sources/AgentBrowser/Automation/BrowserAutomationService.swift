@@ -54,6 +54,36 @@ final class BrowserAutomationService {
                 completion(.failure(code: ErrorCode.invalidParams, message: "Missing 'url' parameter")); return
             }
             completion(openURLResponse(url))
+        case "tabs.close":
+            guard let id = params["id"] as? String else {
+                completion(.failure(code: ErrorCode.invalidParams, message: "Missing 'id' parameter")); return
+            }
+            completion(closeTabResponse(id: id))
+        case "tabs.switch":
+            guard let id = params["id"] as? String else {
+                completion(.failure(code: ErrorCode.invalidParams, message: "Missing 'id' parameter")); return
+            }
+            completion(switchTabResponse(id: id))
+        case "tabs.navigate":
+            guard let id = params["id"] as? String, let url = params["url"] as? String else {
+                completion(.failure(code: ErrorCode.invalidParams, message: "Missing 'id' or 'url' parameter")); return
+            }
+            completion(navigateResponse(id: id, urlString: url))
+        case "page.back":
+            guard let id = params["id"] as? String else {
+                completion(.failure(code: ErrorCode.invalidParams, message: "Missing 'id' parameter")); return
+            }
+            completion(backResponse(id: id))
+        case "page.forward":
+            guard let id = params["id"] as? String else {
+                completion(.failure(code: ErrorCode.invalidParams, message: "Missing 'id' parameter")); return
+            }
+            completion(forwardResponse(id: id))
+        case "page.reload":
+            guard let id = params["id"] as? String else {
+                completion(.failure(code: ErrorCode.invalidParams, message: "Missing 'id' parameter")); return
+            }
+            completion(reloadResponse(id: id))
 
         // Page operations (async -- use callback-based WKWebView APIs)
         case "page.read":
@@ -111,6 +141,42 @@ final class BrowserAutomationService {
                 return .failure(code: ErrorCode.invalidParams, message: "Missing 'url' parameter")
             }
             return openURLResponse(url)
+
+        case "tabs.close":
+            guard let id = params["id"] as? String else {
+                return .failure(code: ErrorCode.invalidParams, message: "Missing 'id' parameter")
+            }
+            return closeTabResponse(id: id)
+
+        case "tabs.switch":
+            guard let id = params["id"] as? String else {
+                return .failure(code: ErrorCode.invalidParams, message: "Missing 'id' parameter")
+            }
+            return switchTabResponse(id: id)
+
+        case "tabs.navigate":
+            guard let id = params["id"] as? String, let url = params["url"] as? String else {
+                return .failure(code: ErrorCode.invalidParams, message: "Missing 'id' or 'url' parameter")
+            }
+            return navigateResponse(id: id, urlString: url)
+
+        case "page.back":
+            guard let id = params["id"] as? String else {
+                return .failure(code: ErrorCode.invalidParams, message: "Missing 'id' parameter")
+            }
+            return backResponse(id: id)
+
+        case "page.forward":
+            guard let id = params["id"] as? String else {
+                return .failure(code: ErrorCode.invalidParams, message: "Missing 'id' parameter")
+            }
+            return forwardResponse(id: id)
+
+        case "page.reload":
+            guard let id = params["id"] as? String else {
+                return .failure(code: ErrorCode.invalidParams, message: "Missing 'id' parameter")
+            }
+            return reloadResponse(id: id)
 
         // Page operations
         case "page.read":
