@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import WebKit
 import os
 
 // MARK: - Non-Destructive Profile Switching
@@ -56,7 +57,81 @@ extension BrowserWindowController {
             }
         }
 
-        // 6. Sync UI.
+        // 6. Recreate WKWebViews so the new profile's data store takes effect.
+        //    The active tab is recreated eagerly; background tabs are lazy
+        //    (needsWebViewRecreation = true, recreated on first selection).
+        let activeTabID = tabManager.activeTab?.id
+        let oldView = tabManager.recreateWebViews(for: newProfileID, activeTabID: activeTabID)
+
+        // 7. Mount the new webview and cross-fade (0.15s) over the old one.
+        if let old = oldView, let active = tabManager.activeTab {
+            crossFadeWebViewSwap(incoming: active.webView, outgoing: old)
+        } else {
+            // No previous active view to animate — plain sync is sufficient.
+            syncDisplayedTab()
+        }
+
+        // 8. Refresh the sidebar to reflect the new profile's tabs.
+        updateSidebar()
+    }
+
+    // MARK: - Cross-Fade Animation (Issue #8)
+
+    /// Mount `incoming` into the web-content area and fade it in over `outgoing`.
+    ///
+    /// Layout steps:
+    /// 1. The outgoing view is still in the hierarchy (already removed from its
+    ///    tab's superview by recreateWebView, re-added here for the fade).
+    /// 2. The incoming view is pinned to the web-content area, initially transparent.
+    /// 3. A 0.15s animation fades incoming to 1.0 and outgoing to 0.0.
+    /// 4. On completion the outgoing view is removed and `syncDisplayedTab` is
+    ///    called to finish UI wiring (progress observer, address bar, etc.).
+    private func crossFadeWebViewSwap(incoming: WKWebView, outgoing: WKWebView) {
+        // Re-attach the outgoing view on top so it is visible during fade-out.
+        outgoing.translatesAutoresizingMaskIntoConstraints = false
+        outgoing.alphaValue = 1.0
+        webContentView.addSubview(outgoing)
+        NSLayoutConstraint.activate([
+            outgoing.topAnchor.constraint(equalTo: webContentView.topAnchor),
+            outgoing.bottomAnchor.constraint(equalTo: webContentView.bottomAnchor),
+            outgoing.leadingAnchor.constraint(equalTo: webContentView.leadingAnchor),
+            outgoing.trailingAnchor.constraint(equalTo: webContentView.trailingAnchor),
+        ])
+
+        // Mount the incoming view underneath, initially invisible.
+        incoming.translatesAutoresizingMaskIntoConstraints = false
+        incoming.alphaValue = 0.0
+        webContentView.addSubview(incoming, positioned: .below, relativeTo: outgoing)
+        NSLayoutConstraint.activate([
+            incoming.topAnchor.constraint(equalTo: webContentView.topAnchor),
+            incoming.bottomAnchor.constraint(equalTo: webContentView.bottomAnchor),
+            incoming.leadingAnchor.constraint(equalTo: webContentView.leadingAnchor),
+            incoming.trailingAnchor.constraint(equalTo: webContentView.trailingAnchor),
+        ])
+
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.15
+            ctx.allowsImplicitAnimation = true
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            outgoing.animator().alphaValue = 0.0
+            incoming.animator().alphaValue = 1.0
+        }, completionHandler: { [weak self] in
+            outgoing.removeFromSuperview()
+            // NSAnimationContext completion handlers always fire on the main thread.
+            // MainActor.assumeIsolated lets us call @MainActor methods safely.
+            MainActor.assumeIsolated {
+                self?.forceResyncDisplayedTab()
+            }
+        })
+    }
+
+    /// Force-resyncs the displayed tab even when displayedTabID matches.
+    ///
+    /// Called from the cross-fade completion block to finish UI wiring
+    /// (address bar, progress observer) after the animation completes.
+    func forceResyncDisplayedTab() {
+        // Clear the cached ID so syncDisplayedTab re-wires everything.
+        clearDisplayedTabID()
         syncDisplayedTab()
         updateSidebar()
     }
