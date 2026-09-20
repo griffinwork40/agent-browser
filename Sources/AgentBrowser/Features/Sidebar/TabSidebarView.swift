@@ -2,6 +2,7 @@
 // The full vertical sidebar: header → divider → scrollable tab list → profile picker.
 // Agent tabs are auto-grouped by sessionTag with collapsible cluster headers.
 // Pinned tabs section is wired but renders nothing until pinned tabs exist.
+// Owns a TabThumbnailCache — invalidates entries on URL changes.
 
 import SwiftUI
 
@@ -26,6 +27,13 @@ struct TabSidebarView: View {
     /// Tracks which groups are currently collapsed; keyed by sessionTag (group.id).
     @State private var collapsedGroups: Set<String> = []
 
+    // MARK: - Thumbnail cache
+
+    /// Sidebar owns the cache; individual rows read from it.
+    @State private var thumbnailCache = TabThumbnailCache()
+
+    // MARK: - Body
+
     var body: some View {
         // GlassSurface with radius:0 because the sidebar is flush to the window
         // edge. It also handles Reduce Transparency by falling back to an opaque
@@ -43,7 +51,8 @@ struct TabSidebarView: View {
                         PinnedTabsSection(
                             pinnedTabs: [],
                             selectedTabID: selectedTabID,
-                            onSelect: onSelect
+                            onSelect: onSelect,
+                            thumbnailCache: thumbnailCache
                         )
 
                         // Grouped + ungrouped tabs
@@ -57,6 +66,7 @@ struct TabSidebarView: View {
                                     tab: tab,
                                     isSelected: tab.id == selectedTabID,
                                     profileColorName: profileColors[tab.record.profileID],
+                                    thumbnailCache: thumbnailCache,
                                     onSelect: { onSelect(tab) },
                                     onClose: { onClose(tab) }
                                 )
@@ -80,6 +90,14 @@ struct TabSidebarView: View {
                 )
             }
             .frame(width: ControlSize.sidebarWidth)
+        }
+        // Invalidate thumbnails when any tab navigates to a new URL.
+        .onChange(of: urlSnapshot) { old, new in
+            for (id, newURL) in new {
+                if old[id] != newURL {
+                    thumbnailCache.invalidate(tabID: id)
+                }
+            }
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Tab Sidebar")
@@ -111,6 +129,7 @@ struct TabSidebarView: View {
                     tab: tab,
                     isSelected: tab.id == selectedTabID,
                     profileColorName: profileColors[tab.record.profileID],
+                    thumbnailCache: thumbnailCache,
                     onSelect: { onSelect(tab) },
                     onClose: { onClose(tab) }
                 )
@@ -118,5 +137,14 @@ struct TabSidebarView: View {
                 .padding(.leading, Spacing.px12)
             }
         }
+    }
+
+    // MARK: - URL change detection
+
+    /// A snapshot of every tab's current URL keyed by tab ID.
+    /// SwiftUI diffs this on every render cycle; when a value changes we
+    /// know that tab navigated and its cached thumbnail is stale.
+    private var urlSnapshot: [UUID: URL?] {
+        Dictionary(uniqueKeysWithValues: tabs.map { ($0.id, $0.url) })
     }
 }
