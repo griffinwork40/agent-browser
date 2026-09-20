@@ -172,6 +172,22 @@ extension BrowserAutomationService {
         guard let tab = resolveTab(id) else {
             completion(.failure(code: ErrorCode.tabNotFound, message: "No tab with id: \(id)")); return
         }
+
+        // Auth-wall gate: run async check, then continue on main actor.
+        Task { @MainActor in
+            if let blocked = await self.checkAuthWallBeforeInteraction(tab: tab, operation: "inspect") {
+                completion(blocked)
+                return
+            }
+            self.runInspect(tab: tab, mode: mode, limit: limit, query: query, completion: completion)
+        }
+    }
+
+    /// Inner inspect implementation (runs after auth gate passes).
+    private func runInspect(
+        tab: BrowserTab, mode: String?, limit: Int?, query: String?,
+        completion: @escaping (AgentResponse) -> Void
+    ) {
         let optsJSON = buildInspectOpts(mode: mode, limit: limit, query: query)
         let script = "window.__agentBrowser ? window.__agentBrowser.inspect(\(optsJSON)) : JSON.stringify({error:'BRIDGE_NOT_LOADED'})"
         let tabID = tab.id.uuidString
@@ -194,6 +210,10 @@ extension BrowserAutomationService {
     private func inspectResponse(id: String, mode: String?, limit: Int?, query: String?) async -> AgentResponse {
         guard let tab = resolveTab(id) else {
             return .failure(code: ErrorCode.tabNotFound, message: "No tab with id: \(id)")
+        }
+        // Auth-wall gate.
+        if let blocked = await checkAuthWallBeforeInteraction(tab: tab, operation: "inspect") {
+            return blocked
         }
         let optsJSON = buildInspectOpts(mode: mode, limit: limit, query: query)
         let script = "window.__agentBrowser ? window.__agentBrowser.inspect(\(optsJSON)) : JSON.stringify({error:'BRIDGE_NOT_LOADED'})"

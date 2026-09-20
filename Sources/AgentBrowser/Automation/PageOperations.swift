@@ -54,11 +54,18 @@ extension BrowserAutomationService {
     /// - "markdown": lightweight semantic extraction (headings, paragraphs, links, lists)
     /// - "text": raw document.body.innerText
     /// - "html": full document HTML
+    ///
+    /// Runs an auth-wall check before extraction; returns AUTH_REQUIRED if detected.
     func readPageResponse(
         id: String, format: String, mode: String?, query: String?, budget: Int?
     ) async -> AgentResponse {
         guard let tab = resolveTab(id) else {
             return .failure(code: ErrorCode.tabNotFound, message: "No tab with id: \(id)")
+        }
+
+        // Auth-wall gate.
+        if let blocked = await checkAuthWallBeforeInteraction(tab: tab, operation: "read") {
+            return blocked
         }
 
         let start = CFAbsoluteTimeGetCurrent()
