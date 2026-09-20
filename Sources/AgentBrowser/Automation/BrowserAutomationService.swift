@@ -29,6 +29,10 @@ final class BrowserAutomationService {
     /// Internal (not private) so the `closeTabResponse` extension can remove closed tabs.
     var sessionExpiryWiredTabs: Set<UUID> = []
 
+    /// Optional delegate that receives cursor position events for the ghost cursor overlay.
+    /// Weak to avoid a retain cycle between the service and the window controller.
+    weak var ghostCursorDelegate: GhostCursorDelegate?
+
     init(tabManager: TabManager, takeoverHandler: TakeoverHandler) {
         self.tabManager = tabManager
         self.takeoverHandler = takeoverHandler
@@ -112,6 +116,18 @@ final class BrowserAutomationService {
                 completion(.failure(code: ErrorCode.invalidParams, message: "Missing 'id' parameter")); return
             }
             screenshotCallback(id: id, completion: completion)
+
+        case "page.cursor.position":
+            // Agents may explicitly report cursor position to drive the ghost cursor overlay.
+            guard let id = params["id"] as? String else {
+                completion(.failure(code: ErrorCode.invalidParams, message: "Missing 'id' parameter")); return
+            }
+            let x = (params["x"] as? Double) ?? Double(params["x"] as? Int ?? 0)
+            let y = (params["y"] as? Double) ?? Double(params["y"] as? Int ?? 0)
+            let agentID = params["agentId"] as? String ?? "unknown"
+            let point = CGPoint(x: x, y: y)
+            ghostCursorDelegate?.agentDidInteract(at: point, agentID: agentID)
+            completion(.success(CursorPositionResult(ok: true, id: id, x: x, y: y)))
 
         case "__bad_request__":
             completion(.failure(code: ErrorCode.badRequest, message: "Invalid AgentRequest JSON"))
@@ -208,6 +224,17 @@ final class BrowserAutomationService {
                 return .failure(code: ErrorCode.invalidParams, message: "Missing 'id' parameter")
             }
             return await screenshotResponse(id: id)
+
+        case "page.cursor.position":
+            // Agents may explicitly report cursor position to drive the ghost cursor overlay.
+            guard let id = params["id"] as? String else {
+                return .failure(code: ErrorCode.invalidParams, message: "Missing 'id' parameter")
+            }
+            let x = (params["x"] as? Double) ?? Double(params["x"] as? Int ?? 0)
+            let y = (params["y"] as? Double) ?? Double(params["y"] as? Int ?? 0)
+            let agentID = params["agentId"] as? String ?? "unknown"
+            ghostCursorDelegate?.agentDidInteract(at: CGPoint(x: x, y: y), agentID: agentID)
+            return .success(CursorPositionResult(ok: true, id: id, x: x, y: y))
 
         default:
             // Try interactive automation methods (inspect, click, fill, press, select, wait)

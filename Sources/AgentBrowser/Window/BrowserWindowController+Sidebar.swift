@@ -103,4 +103,42 @@ extension BrowserWindowController {
             }
         )
     }
+
+    // MARK: - Profile Naming Dialog
+
+    /// Shows a naming dialog, then creates a profile with the entered name.
+    /// Rejects empty or duplicate names and re-prompts instead of using a default (P1).
+    func promptAndCreateProfile() {
+        let alert = NSAlert()
+        alert.messageText = "New Profile"
+        alert.informativeText = "Enter a name for the new profile."
+        alert.addButton(withTitle: "Create")
+        alert.addButton(withTitle: "Cancel")
+
+        let nameField = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        nameField.placeholderString = "Profile name"
+        nameField.stringValue = ""
+        alert.accessoryView = nameField
+
+        guard let window else { return }
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard let self else { return }
+            guard response == .alertFirstButtonReturn else { return }
+            let name = nameField.stringValue.trimmingCharacters(in: .whitespaces)
+            guard !name.isEmpty else { self.promptAndCreateProfile(); return }
+            guard self.profileManager.isNameAvailable(name) else {
+                let errAlert = NSAlert()
+                errAlert.messageText = "Name Already Taken"
+                errAlert.informativeText =
+                    "\"\(name)\" is already used by another profile. Choose a different name."
+                errAlert.addButton(withTitle: "OK")
+                errAlert.beginSheetModal(for: window) { [weak self] _ in
+                    self?.promptAndCreateProfile()
+                }
+                return
+            }
+            self.profileManager.createProfile(name: name)
+            self.updateSidebar()
+        }
+    }
 }

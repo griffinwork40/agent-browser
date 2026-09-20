@@ -4,6 +4,7 @@ import SwiftUI
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var windowController: BrowserWindowController?
     private var agentServer: AgentHTTPServer?
+    private var activityStore: AgentActivityStore?
 
     /// Guards against duplicate in-flight quit-save Tasks when Cocoa calls
     /// applicationShouldTerminate more than once (e.g. repeated Cmd-Q presses
@@ -34,6 +35,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let cbm = ContentBlockerManager()
         self.contentBlockerManager = cbm
 
+        let store = AgentActivityStore()
+        self.activityStore = store
+
         let pm = ProfileManager()
         pm.extensionManager = em
         pm.contentBlockerManager = cbm
@@ -57,6 +61,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         agentServer = AgentHTTPServer(automationService: automationService)
         agentServer?.start()
+
+        // Wire the ghost cursor overlay: attach the controller and inject the delegate.
+        if let wc = windowController, let as_ = activityStore {
+            wc.setupGhostCursor(automationService: automationService,
+                                activityStore: as_)
+        }
 
         NSApp.activate(ignoringOtherApps: true)
 

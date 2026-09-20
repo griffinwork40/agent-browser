@@ -5,6 +5,10 @@ import WebKit
 //
 // Implementation of click/fill/press/select actions and wait polling.
 // Separated from InteractiveAutomation.swift for the 350 LOC rule.
+//
+// Ghost Cursor integration: after each successful interactive action the element
+// centre is extracted from the JS bridge and forwarded to ghostCursorDelegate so
+// BrowserWindowController can position the cursor overlay.
 
 extension BrowserAutomationService {
 
@@ -47,13 +51,20 @@ extension BrowserAutomationService {
     ) {
         let tabID = tab.id.uuidString
         // The bridge lives in the isolated AgentBridge content world.
-        tab.webView.evaluateJavaScript(script, in: nil, in: .world(name: "AgentBridge")) { resultOrError in
+        tab.webView.evaluateJavaScript(script, in: nil, in: .world(name: "AgentBridge")) { [weak self] resultOrError in
             DispatchQueue.main.async {
                 switch resultOrError {
                 case .failure(let error):
                     completion(.failure(code: ErrorCode.javaScriptError, message: error.localizedDescription))
                 case .success(let result):
-                    completion(Self.parseActionResult(raw: result, tabID: tabID, elementId: elementId, action: action))
+                    let response = Self.parseActionResult(raw: result, tabID: tabID,
+                                                          elementId: elementId, action: action)
+                    // Notify ghost cursor delegate when action succeeded and element is known.
+                    if response.ok, let elId = elementId,
+                       Self.isCursorAction(action) {
+                        self?.notifyCursorDelegateCallback(tab: tab, elementId: elId, agentID: id)
+                    }
+                    completion(response)
                 }
             }
         }
@@ -99,10 +110,72 @@ extension BrowserAutomationService {
 
         do {
             let raw = try await evalJSOnTabInBridgeWorld(tab, script: script)
-            return Self.parseActionResult(raw: raw, tabID: tab.id.uuidString, elementId: elementId, action: action)
+            let response = Self.parseActionResult(raw: raw, tabID: tab.id.uuidString,
+                                                  elementId: elementId, action: action)
+            // Notify ghost cursor delegate when action succeeded and element is known.
+            if response.ok, let elId = elementId, Self.isCursorAction(action) {
+                await notifyCursorDelegateAsync(tab: tab, elementId: elId, agentID: id)
+            }
+            return response
         } catch {
             return .failure(code: ErrorCode.javaScriptError, message: error.localizedDescription)
         }
+    }
+
+    // MARK: - Ghost Cursor Helpers
+
+    /// Returns true for actions that should trigger a ghost cursor update.
+    /// nonisolated: pure string comparison, safe to call from any context.
+    nonisolated static func isCursorAction(_ action: String) -> Bool {
+        switch action {
+        case "click", "fill", "select", "hover": return true
+        default: return false
+        }
+    }
+
+    /// Extracts the element centre from the bridge and notifies ghostCursorDelegate (callback path).
+    private func notifyCursorDelegateCallback(tab: BrowserTab, elementId: String, agentID: String) {
+        guard let delegate = ghostCursorDelegate else { return }
+        let escaped = escapeJSString(elementId)
+        let rectScript = """
+        (function(){
+          var el = window.__agentBrowser && window.__agentBrowser.resolveElement('\(escaped)');
+          if (!el) return null;
+          var r = el.getBoundingClientRect();
+          return JSON.stringify({x: r.left + r.width/2, y: r.top + r.height/2});
+        })()
+        """
+        tab.webView.evaluateJavaScript(rectScript, in: nil,
+                                        in: .world(name: "AgentBridge")) { result in
+            guard case .success(let raw) = result,
+                  let json = raw as? String,
+                  let data = json.data(using: .utf8),
+                  let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Double],
+                  let x = dict["x"], let y = dict["y"] else { return }
+            Task { @MainActor in
+                delegate.agentDidInteract(at: CGPoint(x: x, y: y), agentID: agentID)
+            }
+        }
+    }
+
+    /// Extracts the element centre from the bridge and notifies ghostCursorDelegate (async path).
+    private func notifyCursorDelegateAsync(tab: BrowserTab, elementId: String, agentID: String) async {
+        guard let delegate = ghostCursorDelegate else { return }
+        let escaped = escapeJSString(elementId)
+        let rectScript = """
+        (function(){
+          var el = window.__agentBrowser && window.__agentBrowser.resolveElement('\(escaped)');
+          if (!el) return null;
+          var r = el.getBoundingClientRect();
+          return JSON.stringify({x: r.left + r.width/2, y: r.top + r.height/2});
+        })()
+        """
+        guard let raw = try? await evalJSOnTabInBridgeWorld(tab, script: rectScript),
+              let json = raw as? String,
+              let data = json.data(using: .utf8),
+              let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Double],
+              let x = dict["x"], let y = dict["y"] else { return }
+        delegate.agentDidInteract(at: CGPoint(x: x, y: y), agentID: agentID)
     }
 
     static func parseActionResult(raw: Any?, tabID: String, elementId: String?, action: String) -> AgentResponse {

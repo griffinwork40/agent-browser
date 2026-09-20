@@ -35,6 +35,14 @@ final class BrowserWindowController: NSWindowController {
     /// Stored so we can zero/restore it on toggle.
     private var sidebarWidthConstraint: NSLayoutConstraint?
 
+    // MARK: - Ghost Cursor
+
+    /// Manages semi-transparent agent cursor overlays on the web content area.
+    let ghostCursorController = GhostCursorController()
+
+    /// Reference to the activity store; set via setupGhostCursor(automationService:activityStore:).
+    var agentActivityStore: AgentActivityStore?
+
     // MARK: - KVO
 
     private var progressObservation: NSKeyValueObservation?
@@ -196,44 +204,6 @@ final class BrowserWindowController: NSWindowController {
     /// `BrowserWindowController+ProfileSwitch.swift`. Same-profile switching is a no-op.
     func performProfileSwitch(to profileID: UUID) {
         performWorkspacePreservingSwitch(to: profileID)
-    }
-
-    /// Shows a naming dialog, then creates a profile with the entered name.
-    ///
-    /// Replaces the hardcoded "New Profile" creation (P1).
-    func promptAndCreateProfile() {
-        let alert = NSAlert()
-        alert.messageText = "New Profile"
-        alert.informativeText = "Enter a name for the new profile."
-        alert.addButton(withTitle: "Create")
-        alert.addButton(withTitle: "Cancel")
-
-        let nameField = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
-        nameField.placeholderString = "Profile name"
-        nameField.stringValue = ""
-        alert.accessoryView = nameField
-
-        guard let window else { return }
-        alert.beginSheetModal(for: window) { [weak self] response in
-            guard let self else { return }
-            guard response == .alertFirstButtonReturn else { return }
-            let name = nameField.stringValue.trimmingCharacters(in: .whitespaces)
-            // P1: reject empty or duplicate names; re-prompt instead of using a default.
-            guard !name.isEmpty else { self.promptAndCreateProfile(); return }
-            guard self.profileManager.isNameAvailable(name) else {
-                let errAlert = NSAlert()
-                errAlert.messageText = "Name Already Taken"
-                errAlert.informativeText =
-                    "\"\(name)\" is already used by another profile. Choose a different name."
-                errAlert.addButton(withTitle: "OK")
-                errAlert.beginSheetModal(for: window) { [weak self] _ in
-                    self?.promptAndCreateProfile()
-                }
-                return
-            }
-            self.profileManager.createProfile(name: name)
-            self.updateSidebar()
-        }
     }
 
     // MARK: - Sidebar Toggle
