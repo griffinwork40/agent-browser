@@ -13,6 +13,7 @@ final class PersistenceCoordinatorTests: XCTestCase {
 
     // MARK: - Helpers
 
+    @MainActor
     private func withCoordinator(
         _ body: (PersistenceCoordinator, SessionStore, URL) async throws -> Void
     ) async throws {

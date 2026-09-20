@@ -9,13 +9,13 @@ import AppKit
 ///
 /// Each profile owns its own HistoryStore and BookmarkStore, keyed by profile
 /// UUID. Stores are created on demand the first time `setUp(defaultProfileID:)`
-/// is called and whenever a new profile requests a store via `makeHistoryStore`
-/// or `makeBookmarkStore`.
+/// is called and whenever a new profile requests a store via
+/// `makeHistoryStore(for:)` or `makeBookmarkStore(for:)`.
 ///
-/// Not `@MainActor` at the class level so it can be stored as a plain stored
-/// property on `AppDelegate` (which is not actor-isolated). Individual methods
-/// that touch MainActor-isolated types (TabManager, BrowserTab) are annotated
-/// `@MainActor` and must be called from that context.
+/// `@MainActor`-isolated so the mutable `historyStores` and `bookmarkStores`
+/// dictionaries are accessed exclusively on the main actor, matching the
+/// existing call pattern (all call sites run inside `Task { @MainActor in }`).
+@MainActor
 final class PersistenceCoordinator {
 
     // Nonisolated stores — all are actor types, called via await.
@@ -27,22 +27,36 @@ final class PersistenceCoordinator {
     /// Per-profile bookmark stores, keyed by profile UUID.
     private var bookmarkStores: [UUID: BookmarkStore] = [:]
 
+    /// The profile UUID passed to `setUp(defaultProfileID:)`.
+    /// Used by the back-compat shims to return a deterministic store.
+    private(set) var defaultProfileID: UUID?
+
     // MARK: - Back-compat shim (single-profile callers)
     // Retained so existing call sites (NavigationCoordinator injection, tests)
-    // continue to compile. Returns the store for the first known profile.
-    var historyStore: HistoryStore? { historyStores.values.first }
+    // continue to compile. Returns the store for the default profile.
+    var historyStore: HistoryStore? {
+        guard let id = defaultProfileID else { return nil }
+        return historyStores[id]
+    }
 
-    // MainActor-isolated state used by auto-save.
-    @MainActor private weak var tabManager: TabManager?
-    @MainActor private weak var profileManager: ProfileManager?
-    @MainActor private weak var windowController: BrowserWindowController?
-    @MainActor private var autoSaveTimer: Timer?
+    // MARK: - Init
+
+    /// `nonisolated` so `AppDelegate` can create the coordinator as a plain
+    /// stored property without an async hop.  All stored properties are
+    /// value-type defaults — no actor-isolated mutation occurs here.
+    nonisolated init() {}
+
+    // These are @MainActor-isolated by the class annotation.
+    private weak var tabManager: TabManager?
+    private weak var profileManager: ProfileManager?
+    private weak var windowController: BrowserWindowController?
+    private var autoSaveTimer: Timer?
 
     /// Tracks the most recently dispatched auto-save Task so `stopAutoSave()`
     /// can cancel it when a Task was already in-flight when the timer fired.
     /// Invalidating the Timer alone only stops future firings; a Task that was
     /// dispatched before invalidation continues to run unless explicitly cancelled.
-    @MainActor private var pendingAutoSaveTask: Task<Void, Never>?
+    private var pendingAutoSaveTask: Task<Void, Never>?
 
     // MARK: - Bootstrap
 
@@ -54,9 +68,12 @@ final class PersistenceCoordinator {
     ///   2. Perform a one-time migration of any flat `history.json` /
     ///      `bookmarks.json` files from the app-support root into the default
     ///      profile's subdirectory, so existing data is not lost on upgrade.
+    ///   3. Anchor the back-compat shims (`makeHistoryStore()`,
+    ///      `makeBookmarkStore()`) to a deterministic profile.
     ///
-    /// Must be called from an async context (e.g. `Task { await coord.setUp(defaultProfileID:) }`).
+    /// Must be called from an async context (e.g. `Task { @MainActor in await coord.setUp(defaultProfileID:) }`).
     func setUp(defaultProfileID: UUID) async {
+        self.defaultProfileID = defaultProfileID
         let pm = PersistenceManager.shared
         let rootDir = await pm.dataDirectory
         let profileDir = await pm.profileDataDirectory(for: defaultProfileID)
@@ -295,16 +312,18 @@ final class PersistenceCoordinator {
 
     // MARK: - Back-compat single-profile helpers
 
-    /// Returns the HistoryStore for the default (first) profile.
+    /// Returns the HistoryStore for the default profile.
     /// Kept for call sites that pre-date per-profile partitioning.
     func makeHistoryStore() -> HistoryStore? {
-        historyStores.values.first
+        guard let id = defaultProfileID else { return nil }
+        return historyStores[id]
     }
 
-    /// Returns the BookmarkStore for the default (first) profile.
+    /// Returns the BookmarkStore for the default profile.
     /// Kept for call sites that pre-date per-profile partitioning.
     func makeBookmarkStore() -> BookmarkStore? {
-        bookmarkStores.values.first
+        guard let id = defaultProfileID else { return nil }
+        return bookmarkStores[id]
     }
 
     // MARK: - Test Hooks
@@ -316,7 +335,6 @@ final class PersistenceCoordinator {
     }
 
     /// Inject a pending auto-save task for unit testing of the cancellation path.
-    @MainActor
     func _testSetPendingAutoSaveTask(_ task: Task<Void, Never>) {
         pendingAutoSaveTask = task
     }

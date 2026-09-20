@@ -83,27 +83,46 @@ final class BrowserWindowController: NSWindowController {
 
     // MARK: - History Injection
 
-    /// Injects the shared HistoryStore so navigation events can be recorded.
-    /// Wires the store into all currently open tabs and into every future tab
-    /// created while this window is alive.
+    /// Injects the default-profile HistoryStore so navigation events can be
+    /// recorded. Wires the default store into currently open tabs and sets up
+    /// a hook that injects the correct per-profile store into each tab as it
+    /// becomes active.
+    ///
+    /// - Note: After a profile switch the correct store is also wired directly
+    ///   in `performWorkspacePreservingSwitch`, which covers tabs that exist at
+    ///   switch time. The hook here covers tabs created *after* the switch.
     func attachHistoryStore(_ store: HistoryStore) {
         self.historyStore = store
 
-        // Wire into already-open tabs (restored from disk or pre-existing).
+        // Wire into already-open tabs for the default profile.
         for tab in tabManager.tabs {
             tab.attachHistoryStore(store)
         }
 
-        // Wire into tabs created after this point by observing TabManager.
+        // Wire into tabs created/selected after this point.
         // We piggyback on the existing onSelectionChanged hook — new tabs
         // are always selected immediately after creation, so this fires
         // at the right moment.
         let previousSelectionChanged = tabManager.onSelectionChanged
         tabManager.onSelectionChanged = { [weak self] in
             previousSelectionChanged?()
-            // Attach history store to the newly-selected tab if needed.
-            if let activeTab = self?.tabManager.activeTab,
-               let hs = self?.historyStore {
+            guard let self,
+                  let activeTab = self.tabManager.activeTab else { return }
+            let profileID = activeTab.record.profileID
+            if let coordinator = self.persistenceCoordinator {
+                // Ask the coordinator for the profile-specific store.
+                // makeHistoryStore(for:) is async so dispatch a Task; the tab
+                // will record history once the store arrives (typically < 1 ms
+                // for an already-created store).
+                Task { [weak self] in
+                    guard let self else { return }
+                    let hs = await coordinator.makeHistoryStore(for: profileID)
+                    activeTab.attachHistoryStore(hs)
+                }
+            } else if let hs = self.historyStore {
+                // Coordinator not yet wired (early startup) — fall back to the
+                // default-profile store. This path covers the first tab before
+                // the persistence coordinator is injected.
                 activeTab.attachHistoryStore(hs)
             }
         }
