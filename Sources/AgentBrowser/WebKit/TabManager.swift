@@ -153,6 +153,40 @@ final class TabManager {
         selectTab(at: (selectedTabIndex - 1 + tabs.count) % tabs.count)
     }
 
+    // MARK: - WebView Recreation (Issue #8)
+
+    /// Recreate WKWebViews for all tabs belonging to `profileID` so they use
+    /// the new profile's `WKWebViewConfiguration` (and thus its data store).
+    ///
+    /// Lazy strategy:
+    /// - The active tab (identified by `activeTabID`) is recreated immediately
+    ///   and its old view is returned for the caller to animate.
+    /// - Background tabs are marked `needsWebViewRecreation = true` and will be
+    ///   recreated on demand the next time `syncDisplayedTab` selects them.
+    ///
+    /// - Parameters:
+    ///   - profileID: Only tabs whose `record.profileID` matches are affected.
+    ///   - activeTabID: The tab currently visible; recreated eagerly. Pass `nil`
+    ///     to mark all matching tabs for lazy recreation.
+    /// - Returns: The old `WKWebView` of the active tab (detached, ready for
+    ///   cross-fade animation), or `nil` when no active tab matched.
+    @discardableResult
+    func recreateWebViews(for profileID: UUID, activeTabID: UUID?) -> WKWebView? {
+        let config = profileManager.makeConfiguration(for: profileID)
+        var oldActiveView: WKWebView?
+
+        for tab in tabs where tab.record.profileID == profileID {
+            if tab.id == activeTabID {
+                // Eager recreation of the visible tab.
+                oldActiveView = tab.recreateWebView(configuration: config)
+            } else {
+                // Lazy: defer until the tab becomes active.
+                tab.needsWebViewRecreation = true
+            }
+        }
+        return oldActiveView
+    }
+
     // MARK: - Lookup
 
     /// Find a tab by its stable UUID-based ID.
