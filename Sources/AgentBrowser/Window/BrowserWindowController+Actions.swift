@@ -1,8 +1,10 @@
 // BrowserWindowController+Actions.swift
-// @objc menu/keyboard target methods: tab lifecycle, navigation, find, zoom.
+// @objc menu/keyboard target methods: tab lifecycle, navigation, find, zoom,
+// and the command palette toggle.
 // Kept in a separate file to stay under the 350 LOC cap on the main controller.
 
 import AppKit
+import SwiftUI
 import WebKit
 
 // MARK: - Tab Actions (Menu / Keyboard targets)
@@ -149,6 +151,71 @@ extension BrowserWindowController {
 
     @objc func createNewProfile(_ sender: Any?) {
         promptAndCreateProfile()
+    }
+
+    // MARK: - Command Palette
+
+    @objc func toggleCommandPalette(_ sender: Any?) {
+        // If already visible, close it.
+        if let existing = commandPaletteWindow, existing.isVisible {
+            existing.close()
+            commandPaletteWindow = nil
+            return
+        }
+
+        guard let parentWindow = window else { return }
+
+        // Navigate callback: load the URL in the active tab and dismiss.
+        let onNavigate: @MainActor (URL) -> Void = { [weak self] url in
+            guard let self else { return }
+            if let tab = self.tabManager.activeTab {
+                tab.load(url)
+            } else {
+                let tab = self.tabManager.createTab(url: url)
+                self.tabManager.select(tab: tab)
+                self.syncDisplayedTab()
+            }
+        }
+
+        let onDismiss: () -> Void = { [weak self] in
+            self?.commandPaletteWindow?.close()
+            self?.commandPaletteWindow = nil
+        }
+
+        let paletteView = CommandPaletteView(
+            tabManager: tabManager,
+            historyStore: persistenceCoordinator?.makeHistoryStore(),
+            bookmarkStore: persistenceCoordinator?.makeBookmarkStore(),
+            onNavigate: onNavigate,
+            onDismiss: onDismiss
+        )
+
+        let hosting = NSHostingView(rootView: paletteView)
+        hosting.translatesAutoresizingMaskIntoConstraints = false
+
+        // Initial rect — SwiftUI will size to fit via fixedSize.
+        let panelRect = NSRect(x: 0, y: 0, width: 560, height: 200)
+        let panel = CommandPaletteWindow(contentRect: panelRect, hostingView: hosting)
+        commandPaletteWindow = panel
+
+        // Center horizontally in the parent window, offset 20% from top.
+        let parentFrame = parentWindow.frame
+        let panelX = parentFrame.midX - panelRect.width / 2
+        let panelY = parentFrame.maxY - panelRect.height - parentFrame.height * 0.2
+        panel.setFrameOrigin(NSPoint(x: panelX, y: panelY))
+
+        parentWindow.addChildWindow(panel, ordered: .above)
+        panel.makeKeyAndOrderFront(nil)
+
+        // Close when parent loses focus or the palette loses key status.
+        NotificationCenter.default.addObserver(
+            forName: NSWindow.didResignKeyNotification,
+            object: panel,
+            queue: .main
+        ) { [weak self] _ in
+            self?.commandPaletteWindow?.close()
+            self?.commandPaletteWindow = nil
+        }
     }
 
     // MARK: - Zoom

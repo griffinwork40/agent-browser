@@ -283,4 +283,12 @@ final class BrowserTab: Identifiable {
     private static func loadAutomationBridge() -> String? {
         loadScript(named: "automation-bridge")
     }
+
+    // MARK: - Test Hooks
+
+    /// Directly sets the display title without triggering real navigation.
+    /// Accessible via `@testable import AgentBrowser` from the test target.
+    func _setTitleForTesting(_ newTitle: String) {
+        title = newTitle
+    }
 }

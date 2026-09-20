@@ -182,6 +182,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let historyStore = persistenceCoordinator.makeHistoryStore() {
             wc.attachHistoryStore(historyStore)
         }
+
+        // Wire bookmark store so the command palette can query bookmarks.
+        wc.bookmarkStore = persistenceCoordinator.makeBookmarkStore()
+
         wc.syncDisplayedTab()
         wc.updateSidebar()
     }
