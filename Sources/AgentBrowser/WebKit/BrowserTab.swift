@@ -22,14 +22,23 @@ final class BrowserTab: Identifiable {
     private(set) var canGoForward: Bool = false
     private(set) var isSecure: Bool = false
 
-    // The WebView -- always created for now (Phase 1)
-    let webView: WKWebView
+    // The WebView — recreated on profile switch (Issue #8).
+    // Internal(set) so BrowserWindowController can swap the superview reference
+    // in syncDisplayedTab after recreation; all mutation goes through
+    // recreateWebView(configuration:) which owns the KVO tear-down/setup cycle.
+    private(set) var webView: WKWebView
+
+    /// When `true`, this tab's WKWebView was created under a stale profile and
+    /// must be recreated with the current profile's configuration before it is
+    /// next displayed.  Set by TabManager.recreateWebViews(for:activeTabID:)
+    /// for background tabs; cleared by recreateWebView(configuration:).
+    var needsWebViewRecreation: Bool = false
 
     // Delegates must be retained (WKWebView does not retain them)
-    private let navigationCoordinator: NavigationCoordinator
+    private var navigationCoordinator: NavigationCoordinator
     private let uiCoordinator: UICoordinator
 
-    // KVO observations
+    // KVO observations — rebuilt whenever the WKWebView is recreated.
     private var observations: [NSKeyValueObservation] = []
 
     // Zoom level
@@ -113,6 +122,65 @@ final class BrowserTab: Identifiable {
     func setZoom(_ level: Double) {
         zoomLevel = level
         webView.pageZoom = level
+    }
+
+    // MARK: - WebView Recreation (Issue #8)
+
+    /// Replace this tab's WKWebView with a fresh one built from `configuration`.
+    ///
+    /// Steps:
+    /// 1. Capture the URL currently loaded so we can reload it after recreation.
+    /// 2. Tear down KVO on the old WKWebView (prevents dangling observations).
+    /// 3. Detach the old WKWebView from its superview (caller owns animation).
+    /// 4. Build and wire the new WKWebView.
+    /// 5. Set up fresh KVO and delegate callbacks.
+    /// 6. Return the old view so the caller can animate the cross-fade.
+    ///
+    /// - Parameter configuration: The new profile's `WKWebViewConfiguration`.
+    /// - Returns: The detached old `WKWebView` for cross-fade animation; the
+    ///   caller is responsible for removing it from the view hierarchy.
+    @discardableResult
+    func recreateWebView(configuration: WKWebViewConfiguration) -> WKWebView {
+        let capturedURL = self.url
+
+        // 1. Invalidate all KVO on the outgoing webview.
+        observations.forEach { $0.invalidate() }
+        observations = []
+
+        // 2. Detach the old webview — return it so callers can animate.
+        let old = webView
+        old.navigationDelegate = nil
+        old.uiDelegate = nil
+        old.removeFromSuperview()
+
+        // 3. Build the replacement webview.
+        let wv = WKWebView(frame: .zero, configuration: configuration)
+        wv.allowsBackForwardNavigationGestures = true
+        wv.customUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15"
+        wv.pageZoom = zoomLevel
+
+        // 4. Swap: rebuild the NavigationCoordinator to avoid any stale state
+        //    from the old webview's delegate callbacks.
+        let newNC = NavigationCoordinator()
+        newNC.historyStore = navigationCoordinator.historyStore
+        navigationCoordinator = newNC
+
+        wv.navigationDelegate = navigationCoordinator
+        wv.uiDelegate = uiCoordinator
+
+        webView = wv
+
+        // 5. Wire KVO and callbacks on the new webview.
+        setupObservations()
+        setupCallbacks()
+
+        // 6. Reload the captured URL.
+        if let url = capturedURL {
+            wv.load(URLRequest(url: url))
+        }
+
+        needsWebViewRecreation = false
+        return old
     }
 
     // MARK: - Private

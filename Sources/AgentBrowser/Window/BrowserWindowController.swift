@@ -322,8 +322,20 @@ final class BrowserWindowController: NSWindowController {
     // MARK: - Tab Display Sync
 
     /// Ensure the window shows the TabManager's currently selected tab.
+    ///
+    /// Lazy WebView recreation (Issue #8): if the active tab's `needsWebViewRecreation`
+    /// flag is set (a background tab that was deferred during profile switch), recreate
+    /// it now before mounting — no extra animation, since it was never visible.
     func syncDisplayedTab() {
         guard let activeTab = tabManager.activeTab else { return }
+
+        // Lazy recreation: background tab selected for the first time after a profile switch.
+        if activeTab.needsWebViewRecreation {
+            let config = profileManager.makeConfiguration(for: activeTab.record.profileID)
+            activeTab.recreateWebView(configuration: config)
+            // Clear cached ID so the remount below always runs.
+            displayedTabID = nil
+        }
 
         // Nothing to do if already showing this tab
         if displayedTabID == activeTab.id { return }
@@ -348,6 +360,15 @@ final class BrowserWindowController: NSWindowController {
 
         updateUI()
         observeProgress(for: activeTab)
+    }
+
+    /// Reset the cached displayed-tab ID so the next `syncDisplayedTab` call
+    /// unconditionally remounts and rewires the current tab.
+    ///
+    /// Used by the profile-switch cross-fade completion handler in
+    /// `BrowserWindowController+ProfileSwitch.swift` after animation finishes.
+    func clearDisplayedTabID() {
+        displayedTabID = nil
     }
 
     // MARK: - UI Updates
