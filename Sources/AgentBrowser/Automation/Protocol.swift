@@ -69,6 +69,7 @@ enum ErrorCode {
     static let navigationError = "NAVIGATION_ERROR"
     static let invalidArgument = "INVALID_ARGUMENT"
     static let invalidState = "INVALID_STATE"
+    static let permissionDenied = "PERMISSION_DENIED"
 }
 
 // MARK: - AnyCodable (lightweight type-erased Codable)
