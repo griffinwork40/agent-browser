@@ -44,13 +44,26 @@ extension BrowserWindowController {
         // 4. Restore or create the incoming workspace.
         restoreOrCreateWorkspace(for: newProfileID)
 
-        // 5. Recreate WKWebViews so the new profile's data store takes effect.
+        // 5. Wire the incoming profile's HistoryStore into its tabs.
+        //    Done asynchronously (makeHistoryStore(for:) may touch disk on first
+        //    access) but dispatched on @MainActor so all Tab mutations are safe.
+        if let coordinator = persistenceCoordinator {
+            Task { [weak self] in
+                guard let self else { return }
+                let store = await coordinator.makeHistoryStore(for: newProfileID)
+                for tab in self.tabManager.tabs where tab.record.profileID == newProfileID {
+                    tab.attachHistoryStore(store)
+                }
+            }
+        }
+
+        // 6. Recreate WKWebViews so the new profile's data store takes effect.
         //    The active tab is recreated eagerly; background tabs are lazy
         //    (needsWebViewRecreation = true, recreated on first selection).
         let activeTabID = tabManager.activeTab?.id
         let oldView = tabManager.recreateWebViews(for: newProfileID, activeTabID: activeTabID)
 
-        // 6. Mount the new webview and cross-fade (0.15s) over the old one.
+        // 7. Mount the new webview and cross-fade (0.15s) over the old one.
         if let old = oldView, let active = tabManager.activeTab {
             crossFadeWebViewSwap(incoming: active.webView, outgoing: old)
         } else {
@@ -58,7 +71,7 @@ extension BrowserWindowController {
             syncDisplayedTab()
         }
 
-        // 7. Refresh the sidebar to reflect the new profile's tabs.
+        // 8. Refresh the sidebar to reflect the new profile's tabs.
         updateSidebar()
     }
 
