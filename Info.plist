@@ -24,6 +24,10 @@
 	<string>NSApplication</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>NSAppleScriptEnabled</key>
+	<true/>
+	<key>OSAScriptingDefinition</key>
+	<string>AgentBrowser.sdef</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Agent Browser needs camera access for websites that request it.</string>
 	<key>NSMicrophoneUsageDescription</key>
