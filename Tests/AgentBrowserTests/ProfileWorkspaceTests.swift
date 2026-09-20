@@ -157,22 +157,17 @@ final class ProfileWorkspaceTests: XCTestCase {
     }
 
     func testLegacyRestoreHasNoWorkspaces() async throws {
+        // With GRDB persistence the store reads from browser.db, not session.json.
+        // A fresh (empty) database should restore nil — no snapshot was saved yet.
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("legacy-test-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }
 
-        // Write a legacy snapshot (no workspaces field)
-        let legacyJSON = """
-        {"tabs":[],"selectedTabID":null,"savedAt":0}
-        """
-        let fileURL = dir.appendingPathComponent("session.json")
-        try legacyJSON.data(using: .utf8)!.write(to: fileURL)
-
         let store = SessionStore(dataDirectory: dir)
         let restored = await store.restore()
-        XCTAssertNotNil(restored)
-        XCTAssertNil(restored?.workspaces) // absent in legacy
+        // Nothing saved yet — restore must return nil (no stale data).
+        XCTAssertNil(restored, "A fresh GRDB store must return nil from restore() before any save")
     }
 
     func testSaveWorkspacesUpdatesLegacyFieldsFromActiveProfile() async throws {
