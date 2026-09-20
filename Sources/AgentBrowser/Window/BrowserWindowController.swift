@@ -346,17 +346,20 @@ final class BrowserWindowController: NSWindowController {
             oldTab.webView.removeFromSuperview()
         }
 
-        // Add new tab's webview
+        // Add new tab's webview — skip if it is already mounted in webContentView
+        // (e.g. cross-fade animation in +ProfileSwitch already added and constrained it).
         displayedTabID = activeTab.id
         let wv = activeTab.webView
-        wv.translatesAutoresizingMaskIntoConstraints = false
-        webContentView.addSubview(wv)
-        NSLayoutConstraint.activate([
-            wv.topAnchor.constraint(equalTo: webContentView.topAnchor),
-            wv.bottomAnchor.constraint(equalTo: webContentView.bottomAnchor),
-            wv.leadingAnchor.constraint(equalTo: webContentView.leadingAnchor),
-            wv.trailingAnchor.constraint(equalTo: webContentView.trailingAnchor),
-        ])
+        if wv.superview !== webContentView {
+            wv.translatesAutoresizingMaskIntoConstraints = false
+            webContentView.addSubview(wv)
+            NSLayoutConstraint.activate([
+                wv.topAnchor.constraint(equalTo: webContentView.topAnchor),
+                wv.bottomAnchor.constraint(equalTo: webContentView.bottomAnchor),
+                wv.leadingAnchor.constraint(equalTo: webContentView.leadingAnchor),
+                wv.trailingAnchor.constraint(equalTo: webContentView.trailingAnchor),
+            ])
+        }
 
         updateUI()
         observeProgress(for: activeTab)
