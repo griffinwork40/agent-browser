@@ -1,11 +1,16 @@
 import AppKit
 
-/// Bridges the persistence layer (SessionStore, HistoryStore, PersistenceManager)
-/// into the app lifecycle. Owned by AppDelegate.
+/// Bridges the persistence layer (SessionStore, HistoryStore, BookmarkStore,
+/// PersistenceManager) into the app lifecycle. Owned by AppDelegate.
 ///
 /// - Session restore: call `restoreSession(into:)` after the window is ready.
 /// - Session save: call `saveSession(from:)` on quit and on the auto-save timer.
 /// - Auto-save: call `startAutoSave(tabManager:)` to begin 30-second snapshots.
+///
+/// Each profile owns its own HistoryStore and BookmarkStore, keyed by profile
+/// UUID. Stores are created on demand the first time `setUp(defaultProfileID:)`
+/// is called and whenever a new profile requests a store via `makeHistoryStore`
+/// or `makeBookmarkStore`.
 ///
 /// Not `@MainActor` at the class level so it can be stored as a plain stored
 /// property on `AppDelegate` (which is not actor-isolated). Individual methods
@@ -13,9 +18,19 @@ import AppKit
 /// `@MainActor` and must be called from that context.
 final class PersistenceCoordinator {
 
-    // Nonisolated stores — both are actor types, called via await.
+    // Nonisolated stores — all are actor types, called via await.
     private(set) var sessionStore: SessionStore?
-    private(set) var historyStore: HistoryStore?
+
+    /// Per-profile history stores, keyed by profile UUID.
+    private var historyStores: [UUID: HistoryStore] = [:]
+
+    /// Per-profile bookmark stores, keyed by profile UUID.
+    private var bookmarkStores: [UUID: BookmarkStore] = [:]
+
+    // MARK: - Back-compat shim (single-profile callers)
+    // Retained so existing call sites (NavigationCoordinator injection, tests)
+    // continue to compile. Returns the store for the first known profile.
+    var historyStore: HistoryStore? { historyStores.values.first }
 
     // MainActor-isolated state used by auto-save.
     @MainActor private weak var tabManager: TabManager?
@@ -31,12 +46,51 @@ final class PersistenceCoordinator {
 
     // MARK: - Bootstrap
 
-    /// Asynchronously initialises both stores from `PersistenceManager.shared`.
-    /// Must be called from an async context (e.g. `Task { await coord.setUp() }`).
-    func setUp() async {
-        let dir = await PersistenceManager.shared.dataDirectory
-        sessionStore = SessionStore(dataDirectory: dir)
-        historyStore = HistoryStore(dataDirectory: dir)
+    /// Asynchronously initialises all stores from `PersistenceManager.shared`.
+    ///
+    /// - Parameter defaultProfileID: The UUID of the app's first / default profile.
+    ///   Used to:
+    ///   1. Create the initial per-profile HistoryStore and BookmarkStore.
+    ///   2. Perform a one-time migration of any flat `history.json` /
+    ///      `bookmarks.json` files from the app-support root into the default
+    ///      profile's subdirectory, so existing data is not lost on upgrade.
+    ///
+    /// Must be called from an async context (e.g. `Task { await coord.setUp(defaultProfileID:) }`).
+    func setUp(defaultProfileID: UUID) async {
+        let pm = PersistenceManager.shared
+        let rootDir = await pm.dataDirectory
+        let profileDir = await pm.profileDataDirectory(for: defaultProfileID)
+
+        sessionStore = SessionStore(dataDirectory: rootDir)
+
+        // One-time migration: move flat files from root into default profile dir.
+        await Self.migrateRootFiles(from: rootDir, to: profileDir)
+
+        historyStores[defaultProfileID] = HistoryStore(dataDirectory: profileDir)
+        bookmarkStores[defaultProfileID] = BookmarkStore(dataDirectory: profileDir)
+    }
+
+    // MARK: - Migration
+
+    /// Moves `history.json` and `bookmarks.json` from the app-support root into
+    /// `profileDir` if they exist at the root and do NOT yet exist in `profileDir`.
+    ///
+    /// This is a one-time operation: once a file lives in `profileDir` the root
+    /// copy is gone and subsequent launches skip the migration silently.
+    private static func migrateRootFiles(from rootDir: URL, to profileDir: URL) async {
+        let fm = FileManager.default
+        for filename in ["history.json", "bookmarks.json"] {
+            let source = rootDir.appendingPathComponent(filename)
+            let destination = profileDir.appendingPathComponent(filename)
+            guard fm.fileExists(atPath: source.path),
+                  !fm.fileExists(atPath: destination.path) else { continue }
+            do {
+                try fm.moveItem(at: source, to: destination)
+            } catch {
+                // Non-fatal: log and fall through; the profile gets an empty store.
+                fputs("PersistenceCoordinator: migration failed for \(filename): \(error)\n", stderr)
+            }
+        }
     }
 
     // MARK: - Session Restore
@@ -215,11 +269,42 @@ final class PersistenceCoordinator {
         return snapshot.migratedWorkspaces(activeProfileID: activeProfileID)
     }
 
-    // MARK: - History Store Access
+    // MARK: - Per-Profile Store Access
 
-    /// Returns the shared HistoryStore for injection into NavigationCoordinator.
+    /// Returns the HistoryStore for `profileID`, creating it on demand if needed.
+    ///
+    /// Stores created on demand are fully functional but do NOT perform the
+    /// one-time root migration (that only runs during `setUp`). This covers
+    /// profiles created after initial launch — they start with an empty store.
+    func makeHistoryStore(for profileID: UUID) async -> HistoryStore {
+        if let existing = historyStores[profileID] { return existing }
+        let dir = await PersistenceManager.shared.profileDataDirectory(for: profileID)
+        let store = HistoryStore(dataDirectory: dir)
+        historyStores[profileID] = store
+        return store
+    }
+
+    /// Returns the BookmarkStore for `profileID`, creating it on demand if needed.
+    func makeBookmarkStore(for profileID: UUID) async -> BookmarkStore {
+        if let existing = bookmarkStores[profileID] { return existing }
+        let dir = await PersistenceManager.shared.profileDataDirectory(for: profileID)
+        let store = BookmarkStore(dataDirectory: dir)
+        bookmarkStores[profileID] = store
+        return store
+    }
+
+    // MARK: - Back-compat single-profile helpers
+
+    /// Returns the HistoryStore for the default (first) profile.
+    /// Kept for call sites that pre-date per-profile partitioning.
     func makeHistoryStore() -> HistoryStore? {
-        historyStore
+        historyStores.values.first
+    }
+
+    /// Returns the BookmarkStore for the default (first) profile.
+    /// Kept for call sites that pre-date per-profile partitioning.
+    func makeBookmarkStore() -> BookmarkStore? {
+        bookmarkStores.values.first
     }
 
     // MARK: - Test Hooks

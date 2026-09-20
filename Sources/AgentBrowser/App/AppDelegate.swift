@@ -48,7 +48,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Runs async to avoid blocking the main thread during disk I/O,
         // but stays on MainActor so TabManager mutations are safe.
         Task { @MainActor in
-            await persistenceCoordinator.setUp()
+            await persistenceCoordinator.setUp(defaultProfileID: pm.activeProfileID)
 
             // P4: Restore per-profile workspaces (v2 path; migrates legacy flat tabs).
             let savedWorkspaces = await persistenceCoordinator.restoreWorkspaces(
