@@ -12,7 +12,7 @@ extension BrowserAutomationService {
     ///
     /// - Parameter urlString: The caller-supplied string (may omit scheme).
     /// - Returns: `.success(URL)` with the resolved URL, or `.failure(AgentErrorDetail)`
-    ///   which callers convert to an `AgentResponse` via `AgentResponse.failure(from:)`.
+    ///   which callers convert to an `AgentResponse` via `.failure(code: detail.code, message: detail.message)`.
     ///
     /// Normalisation rules:
     /// 1. If the string has no scheme and looks like a hostname (contains `.`, no spaces),
