@@ -67,23 +67,13 @@ extension BrowserAutomationService {
         guard let tab = resolveTab(id) else {
             return .failure(code: ErrorCode.tabNotFound, message: "No tab with id: \(id)")
         }
-        // Apply the same URL normalisation and scheme guard as tabs.open.
-        var resolved = urlString
-        if URL(string: resolved)?.scheme == nil {
-            if resolved.contains(".") && !resolved.contains(" ") {
-                resolved = "https://\(resolved)"
-            } else {
-                return .failure(code: ErrorCode.invalidURL, message: "Cannot parse URL: \(urlString)")
-            }
+        switch validateAndResolveURL(urlString) {
+        case .failure(let detail):
+            return .failure(code: detail.code, message: detail.message)
+        case .success(let url):
+            tab.load(url)
+            return .success(NavigateResult(id: id, url: url.absoluteString))
         }
-        guard let url = URL(string: resolved) else {
-            return .failure(code: ErrorCode.invalidURL, message: "Cannot parse URL: \(urlString)")
-        }
-        guard ["http", "https"].contains(url.scheme?.lowercased()) else {
-            return .failure(code: ErrorCode.invalidURL, message: "Unsupported URL scheme: \(url.scheme ?? "none")")
-        }
-        tab.load(url)
-        return .success(NavigateResult(id: id, url: url.absoluteString))
     }
 
     // MARK: - page.back

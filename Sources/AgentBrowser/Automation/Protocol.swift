@@ -33,7 +33,7 @@ struct AgentResponse: Codable, Sendable {
     }
 }
 
-struct AgentErrorDetail: Codable, Sendable {
+struct AgentErrorDetail: Codable, Sendable, Error {
     let code: String
     let message: String
 }
