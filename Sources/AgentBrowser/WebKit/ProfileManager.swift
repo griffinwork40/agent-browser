@@ -7,6 +7,11 @@ import Observation
 ///
 /// Each profile gets its own WKWebsiteDataStore (cookies, cache, local storage)
 /// via `WKWebsiteDataStore(forIdentifier:)`, so profiles are fully isolated.
+///
+/// When an ``ExtensionManager`` is wired in via ``extensionManager``, every
+/// ``makeConfiguration(for:)`` call attaches its shared
+/// `WKWebExtensionController` to the resulting `WKWebViewConfiguration` so all
+/// web views participate in the same extension session.
 @Observable @MainActor
 final class ProfileManager {
     private(set) var profiles: [ProfileRecord] = []
@@ -17,6 +22,11 @@ final class ProfileManager {
 
     /// Cached data stores — created lazily, reused across calls.
     private var dataStores: [UUID: WKWebsiteDataStore] = [:]
+
+    /// Optional extension manager. Set by AppDelegate after creation.
+    /// When present and running macOS 15.4+, its controller is attached to
+    /// every new ``WKWebViewConfiguration``.
+    weak var extensionManager: ExtensionManager?
 
     /// Production initialiser. Persists to Application Support/AgentBrowser/profiles.json.
     convenience init() {
@@ -90,6 +100,13 @@ final class ProfileManager {
             )
             config.userContentController.addUserScript(script)
         }
+
+        // Attach the web extension controller when available (macOS 15.4+).
+        if #available(macOS 15.4, *),
+           let controller = extensionManager?.extensionController {
+            config.webExtensionController = controller
+        }
+
         return config
     }
 
