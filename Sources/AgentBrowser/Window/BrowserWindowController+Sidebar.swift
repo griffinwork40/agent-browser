@@ -1,13 +1,14 @@
 // BrowserWindowController+Sidebar.swift
-// Sidebar setup, makeSidebarView, and profile-creation dialog — extracted from
-// BrowserWindowController.swift to stay under the 350-LOC cap.
+// Sidebar lifecycle: setup, rebuild, toggle, profile creation dialog, and
+// the `makeSidebarView()` factory that assembles the SwiftUI tree.
+// Extracted from BrowserWindowController.swift to keep that file under 350 LOC.
 
 import AppKit
 import SwiftUI
 
 extension BrowserWindowController {
 
-    // MARK: - Sidebar Init
+    // MARK: - Setup
 
     /// Creates the NSHostingController<TabSidebarView> and embeds it in sidebarContainerView.
     /// Called once from init after setupLayout().
@@ -28,21 +29,43 @@ extension BrowserWindowController {
         ])
     }
 
+    // MARK: - Update
+
     /// Rebuilds the sidebar rootView with fresh tabs/selection data.
+    /// Call whenever the tabs array or selection changes (individual tab properties
+    /// — title, url, isLoading — are tracked automatically by @Observable).
     func updateSidebar() {
         sidebarHostingController?.rootView = makeSidebarView()
     }
 
-    // MARK: - Profile Switch Entry Point
+    // MARK: - Toggle
+
+    @objc func toggleSidebar(_ sender: Any?) {
+        isSidebarVisible.toggle()
+        let targetWidth: CGFloat = isSidebarVisible ? ControlSize.sidebarWidth : 0
+
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = Motion.standard
+            ctx.allowsImplicitAnimation = true
+            sidebarWidthConstraint?.constant = targetWidth
+            sidebarContainerView.isHidden = !isSidebarVisible
+            window?.contentView?.layoutSubtreeIfNeeded()
+        }
+    }
+
+    // MARK: - Profile Management
 
     /// Switches to the given profile, preserving both profiles' workspaces (P2).
+    ///
+    /// Delegates to `performWorkspacePreservingSwitch(to:)` defined in
+    /// `BrowserWindowController+ProfileSwitch.swift`. Same-profile switching is a no-op.
     func performProfileSwitch(to profileID: UUID) {
         performWorkspacePreservingSwitch(to: profileID)
     }
 
-    // MARK: - Profile Creation Dialog
-
     /// Shows a naming dialog, then creates a profile with the entered name.
+    ///
+    /// Rejects empty or duplicate names and re-prompts instead of using a default (P1).
     func promptAndCreateProfile() {
         let alert = NSAlert()
         alert.messageText = "New Profile"
@@ -60,6 +83,7 @@ extension BrowserWindowController {
             guard let self else { return }
             guard response == .alertFirstButtonReturn else { return }
             let name = nameField.stringValue.trimmingCharacters(in: .whitespaces)
+            // P1: reject empty or duplicate names; re-prompt instead of using a default.
             guard !name.isEmpty else {
                 self.promptAndCreateProfile()
                 return
@@ -83,6 +107,7 @@ extension BrowserWindowController {
     // MARK: - Sidebar View Factory
 
     func makeSidebarView() -> TabSidebarView {
+        // Build profileID → colorName map from the live profiles list.
         let profileColors: [UUID: String] = Dictionary(
             uniqueKeysWithValues: profileManager.profiles.map { ($0.id, $0.colorName) }
         )
@@ -96,6 +121,7 @@ extension BrowserWindowController {
             },
             onClose: { [weak self] tab in
                 guard let self else { return }
+                // P2: record closed tab into this profile's workspace history before removal.
                 let entry = ProfileWorkspace.TabEntry(
                     id: tab.id,
                     urlString: tab.url?.absoluteString,
@@ -125,53 +151,26 @@ extension BrowserWindowController {
             profiles: profileManager.profiles,
             activeProfileID: profileManager.activeProfileID,
             onSwitchProfile: { [weak self] id in
-                self?.performProfileSwitch(to: id)
+                guard let self else { return }
+                self.performProfileSwitch(to: id)
             },
             onCreateProfile: { [weak self] in
-                self?.promptAndCreateProfile()
+                guard let self else { return }
+                self.promptAndCreateProfile()
             },
             onRenameProfile: { [weak self] id, newName -> Bool in
                 guard let self else { return false }
                 return self.profileManager.renameProfile(id: id, to: newName)
-            }
-        )
-    }
-
-    // MARK: - Profile Naming Dialog
-
-    /// Shows a naming dialog, then creates a profile with the entered name.
-    /// Rejects empty or duplicate names and re-prompts instead of using a default (P1).
-    func promptAndCreateProfile() {
-        let alert = NSAlert()
-        alert.messageText = "New Profile"
-        alert.informativeText = "Enter a name for the new profile."
-        alert.addButton(withTitle: "Create")
-        alert.addButton(withTitle: "Cancel")
-
-        let nameField = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
-        nameField.placeholderString = "Profile name"
-        nameField.stringValue = ""
-        alert.accessoryView = nameField
-
-        guard let window else { return }
-        alert.beginSheetModal(for: window) { [weak self] response in
-            guard let self else { return }
-            guard response == .alertFirstButtonReturn else { return }
-            let name = nameField.stringValue.trimmingCharacters(in: .whitespaces)
-            guard !name.isEmpty else { self.promptAndCreateProfile(); return }
-            guard self.profileManager.isNameAvailable(name) else {
-                let errAlert = NSAlert()
-                errAlert.messageText = "Name Already Taken"
-                errAlert.informativeText =
-                    "\"\(name)\" is already used by another profile. Choose a different name."
-                errAlert.addButton(withTitle: "OK")
-                errAlert.beginSheetModal(for: window) { [weak self] _ in
-                    self?.promptAndCreateProfile()
+            },
+            onDeleteProfile: { [weak self] id in
+                guard let self else { return }
+                Task { [weak self] in
+                    guard let self else { return }
+                    await self.profileManager.deleteProfile(id: id)
+                    self.updateSidebar()
                 }
-                return
-            }
-            self.profileManager.createProfile(name: name)
-            self.updateSidebar()
-        }
+            },
+            agentActivityStore: agentActivityStore
+        )
     }
 }

@@ -33,14 +33,19 @@ struct TabSidebarView: View {
     @State private var thumbnailCache = TabThumbnailCache()
 
     // MARK: - Body
-
+    /// Agent data source — used by header badge and individual tab rows.
+    var agentActivityStore: AgentActivityStore?
     var body: some View {
         // GlassSurface with radius:0 because the sidebar is flush to the window
         // edge. It also handles Reduce Transparency by falling back to an opaque
         // windowBackgroundColor fill automatically.
         GlassSurface(material: .bar, radius: 0) {
             VStack(spacing: 0) {
-                SidebarHeaderView(tabCount: tabs.count, onNewTab: onNewTab)
+                SidebarHeaderView(
+                    tabCount: tabs.count,
+                    connectedAgentCount: connectedAgentCount,
+                    onNewTab: onNewTab
+                )
 
                 Divider()
                     .opacity(Opacity.divider)
@@ -68,7 +73,8 @@ struct TabSidebarView: View {
                                     profileColorName: profileColors[tab.record.profileID],
                                     thumbnailCache: thumbnailCache,
                                     onSelect: { onSelect(tab) },
-                                    onClose: { onClose(tab) }
+                                    onClose: { onClose(tab) },
+                                    agentActivityStore: agentActivityStore
                                 )
                             }
                         }
@@ -131,7 +137,8 @@ struct TabSidebarView: View {
                     profileColorName: profileColors[tab.record.profileID],
                     thumbnailCache: thumbnailCache,
                     onSelect: { onSelect(tab) },
-                    onClose: { onClose(tab) }
+                    onClose: { onClose(tab) },
+                    agentActivityStore: agentActivityStore
                 )
                 // Indent grouped tabs slightly to visually nest under the header
                 .padding(.leading, Spacing.px12)
@@ -146,5 +153,11 @@ struct TabSidebarView: View {
     /// know that tab navigated and its cached thumbnail is stale.
     private var urlSnapshot: [UUID: URL?] {
         Dictionary(uniqueKeysWithValues: tabs.map { ($0.id, $0.url) })
+    }
+
+    // MARK: - Private helpers
+
+    private var connectedAgentCount: Int {
+        agentActivityStore?.connectedAgents().count ?? 0
     }
 }
