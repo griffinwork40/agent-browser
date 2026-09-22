@@ -13,17 +13,34 @@ struct ProfileRowView: View {
     /// When non-nil, a rename pencil button appears on hover. Returns `false` for
     /// invalid (empty / duplicate) names; the field briefly shows an error tint.
     var onRename: ((String) -> Bool)?
+    /// Called when the user confirms deletion via the context menu.
+    var onDelete: (() -> Void)? = nil
+    /// When `false`, the Delete context menu item is disabled (last remaining profile).
+    var canDelete: Bool = true
 
     @State private var isHovered = false
     @State private var isRenaming = false
     @State private var renameText = ""
     @State private var renameError = false
+    @State private var showDeleteConfirmation = false
 
     var body: some View {
-        if isRenaming {
-            renameField
-        } else {
-            rowButton
+        Group {
+            if isRenaming {
+                renameField
+            } else {
+                rowButton
+            }
+        }
+        .confirmationDialog(
+            "Delete \"\(profile.name)\"?",
+            isPresented: $showDeleteConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Delete Profile", role: .destructive) { onDelete?() }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("This will remove all browsing data for this profile. This cannot be undone.")
         }
     }
 
@@ -79,6 +96,23 @@ struct ProfileRowView: View {
             .background(rowBackground, in: .rect(cornerRadius: Radius.small))
         }
         .buttonStyle(.plain)
+        .contextMenu {
+            if onRename != nil {
+                Button {
+                    renameText = profile.name
+                    renameError = false
+                    isRenaming = true
+                } label: {
+                    Label("Rename", systemImage: "pencil")
+                }
+            }
+            Button(role: .destructive) {
+                showDeleteConfirmation = true
+            } label: {
+                Label("Delete", systemImage: "trash")
+            }
+            .disabled(!canDelete)
+        }
         .onHover { hovered in
             withAnimation(.easeInOut(duration: Motion.micro)) {
                 isHovered = hovered

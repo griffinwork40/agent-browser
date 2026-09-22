@@ -20,6 +20,7 @@ struct TabSidebarView: View {
     let onSwitchProfile: (UUID) -> Void
     let onCreateProfile: () -> Void
     var onRenameProfile: ((UUID, String) -> Bool)?
+    var onDeleteProfile: ((UUID) -> Void)? = nil
 
     var body: some View {
         // GlassSurface with radius:0 because the sidebar is flush to the window
@@ -64,7 +65,8 @@ struct TabSidebarView: View {
                     activeProfileID: activeProfileID,
                     onSwitchProfile: onSwitchProfile,
                     onCreateProfile: onCreateProfile,
-                    onRenameProfile: onRenameProfile
+                    onRenameProfile: onRenameProfile,
+                    onDeleteProfile: onDeleteProfile
                 )
             }
             .frame(width: ControlSize.sidebarWidth)

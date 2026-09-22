@@ -14,6 +14,8 @@ struct ProfilePickerView: View {
     /// Called when the user submits a rename. Return `false` to indicate the
     /// name was invalid (empty or duplicate); the row will show an error state.
     var onRenameProfile: ((UUID, String) -> Bool)?
+    /// Called when the user confirms deletion of a profile.
+    var onDeleteProfile: ((UUID) -> Void)? = nil
 
     @State private var isExpanded = false
 
@@ -90,7 +92,11 @@ struct ProfilePickerView: View {
                     },
                     onRename: onRenameProfile.map { handler in
                         { newName in handler(profile.id, newName) }
-                    }
+                    },
+                    onDelete: onDeleteProfile.map { handler in
+                        { handler(profile.id) }
+                    },
+                    canDelete: profiles.count > 1
                 )
             }
 
