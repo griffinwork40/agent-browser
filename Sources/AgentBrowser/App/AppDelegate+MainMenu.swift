@@ -90,6 +90,13 @@ extension AppDelegate {
 
     private func makeViewMenuItem() -> NSMenuItem {
         let menu = NSMenu(title: "View")
+        let cmdPalette = NSMenuItem(
+            title: "Command Palette",
+            action: #selector(BrowserWindowController.toggleCommandPalette(_:)),
+            keyEquivalent: "k"
+        )
+        menu.addItem(cmdPalette)
+        menu.addItem(.separator())
         menu.addItem(withTitle: "Reload",
                      action: #selector(BrowserWindowController.reloadPage(_:)),
                      keyEquivalent: "r")

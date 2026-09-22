@@ -58,6 +58,15 @@ final class BrowserWindowController: NSWindowController {
     /// Shared history store — injected after async init in PersistenceCoordinator.
     private var historyStore: HistoryStore?
 
+    /// Shared bookmark store — injected after async init in PersistenceCoordinator.
+    var bookmarkStore: BookmarkStore?
+
+    // MARK: - Command Palette
+
+    /// Retained while the palette panel is visible; nil when closed.
+    /// Internal (not private) so the +Actions extension can read/write it.
+    var commandPaletteWindow: CommandPaletteWindow?
+
     // MARK: - Init
 
     init(tabManager: TabManager, profileManager: ProfileManager, skipInitialTab: Bool = false) {
