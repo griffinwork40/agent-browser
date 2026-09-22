@@ -52,10 +52,12 @@ final class ScriptableTab: NSObject {
     }
 
     /// 1-based position in the window's tab list.
+    /// Returns 0 (NSNotFound sentinel) when the parent window is unavailable
+    /// so callers can distinguish "unknown index" from a real position.
     @objc var scriptingIndex: Int {
         guard let win = parentWindow,
               let wc = win.windowController as? BrowserWindowController else {
-            return 1
+            return 0
         }
         let index = wc.tabManager.tabs.firstIndex(where: { $0.id == tab.id }) ?? 0
         return index + 1

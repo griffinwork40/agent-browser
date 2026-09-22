@@ -19,9 +19,9 @@ import AppKit
 // Note on NSScriptCommand in tests:
 //   NSScriptCommand(commandDescription:) requires a live NSScriptCommandDescription
 //   from the scripting registry, which is only available inside a real .app bundle.
-//   Command handler methods only act on the tab reference — they never call back
-//   into the command — so we can pass a pre-existing NSGetCommand for the `command`
-//   argument without any functional consequence.
+//   Command handler methods guard on parentWindow before touching the command object,
+//   so passing nil for the NSScriptCommand argument is safe in tests where
+//   parentWindow is nil and the guard exits immediately.
 
 @Suite("AppleScript scripting support")
 struct AppleScriptTests {
@@ -62,19 +62,19 @@ struct AppleScriptTests {
         #expect(st.scriptingIsLoading == false)
     }
 
-    @Test("ScriptableTab.scriptingIndex falls back to 1 without a parent window")
+    @Test("ScriptableTab.scriptingIndex returns 0 (error sentinel) without a parent window")
     @MainActor func scriptingIndexFallback() {
         let tm = TabManager()
         let t1 = tm.createTab()
         let t2 = tm.createTab()
 
-        // Without a real NSWindow we cannot resolve the index through the
-        // BrowserWindowController path, so we verify the safe fallback.
+        // Without a real NSWindow the index cannot be resolved, so the property
+        // returns 0 (NSNotFound sentinel) rather than a misleading 1.
         let st1 = ScriptableTab(tab: t1, parentWindow: nil)
         let st2 = ScriptableTab(tab: t2, parentWindow: nil)
 
-        #expect(st1.scriptingIndex == 1)
-        #expect(st2.scriptingIndex == 1)
+        #expect(st1.scriptingIndex == 0)
+        #expect(st2.scriptingIndex == 0)
     }
 
     @Test("ScriptableTab IDs are unique across tabs")
@@ -153,11 +153,11 @@ struct AppleScriptTests {
         let countBefore = tm.tabs.count
 
         // parentWindow == nil → guard exits early; TabManager is unchanged.
-        // Handlers only use `self.tab` — we call them via ObjC message send
-        // passing `nil` for the command since NSScriptCommand cannot be
-        // instantiated safely without a live scripting registry in test targets.
+        // handleClose: guards on parentWindow before touching the command, so we
+        // invoke it via the ObjC runtime (perform) which accepts nil for id-typed
+        // parameters without UB, avoiding the need to conjure a live NSScriptCommand.
         let st = ScriptableTab(tab: tab, parentWindow: nil)
-        st.handleClose(unsafeBitCast(NSObject(), to: NSScriptCommand.self))
+        _ = st.perform(Selector(("handleClose:")), with: nil)
 
         #expect(tm.tabs.count == countBefore)
     }

@@ -70,6 +70,27 @@ extension NSWindow {
         wc.updateSidebar()
         return ScriptableTab(tab: tab, parentWindow: self)
     }
+
+    /// KVC mutator called by NSCreateCommand when AppleScript evaluates
+    /// `make new tab [with properties {...}] in window N`.
+    ///
+    /// NSCreateCommand resolves `make new tab` by looking for
+    /// `insertInScriptingTabs:atIndex:` on the container object before falling
+    /// back to `newScriptingTab()`. Providing both ensures the command works
+    /// regardless of which code path the scripting runtime takes.
+    ///
+    /// - Parameters:
+    ///   - scriptable: The ScriptableTab object NSCreateCommand just allocated.
+    ///   - index: Desired 0-based insertion index (ignored -- new tabs always
+    ///     append to the end and become the active tab).
+    @objc @MainActor
+    func insertInScriptingTabs(_ scriptable: ScriptableTab, atIndex index: Int) {
+        guard let wc = browserWindowController else { return }
+        let tab = wc.tabManager.createTab()
+        wc.tabManager.select(tab: tab)
+        wc.syncDisplayedTab()
+        wc.updateSidebar()
+    }
 }
 
 // MARK: - NSApplication: open location handler
