@@ -36,7 +36,12 @@ extension BrowserAutomationService {
         guard let tab = resolveTab(id) else {
             return .failure(code: ErrorCode.tabNotFound, message: "No tab with id: \(id)")
         }
+        let tabID = tab.id
         let closed = tabManager.closeTab(tab)
+        if closed {
+            sessionExpiryWiredTabs.remove(tabID)
+            AuthWallInterceptorState.shared.removeTab(tabID: tabID)
+        }
         return .success(CloseResult(id: id, closed: closed))
     }
 

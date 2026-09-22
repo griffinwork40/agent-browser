@@ -47,6 +47,10 @@ final class BrowserTab: Identifiable {
     // Callback for when a popup/new-tab navigation is requested
     var onNewTabRequested: ((URL) -> Void)?
 
+    /// Called after any navigation completes (didFinish). Consumers may use this
+    /// to run post-navigation checks (e.g. session-expiry detection).
+    var onNavigationDidFinish: (() -> Void)?
+
     /// Inject the shared HistoryStore so every completed navigation is recorded.
     /// Call after async persistence initialisation is complete.
     func attachHistoryStore(_ store: HistoryStore) {
@@ -225,6 +229,11 @@ final class BrowserTab: Identifiable {
         // Wire popup/new-window requests from UICoordinator to our callback
         uiCoordinator.onNewWindowRequested = { [weak self] url in
             self?.onNewTabRequested?(url)
+        }
+
+        // Wire navigation-finish notifications for post-navigation checks.
+        navigationCoordinator.onDidFinish = { [weak self] in
+            self?.onNavigationDidFinish?()
         }
     }
 

@@ -11,6 +11,7 @@ extension BrowserAutomationService {
     // MARK: - Read Page (Callback)
 
     /// Read page content using callback-based JS evaluation.
+    /// Runs an auth-wall check before extraction; returns AUTH_REQUIRED if detected.
     func readPageCallback(
         id: String, format: String, mode: String?, query: String?, budget: Int?,
         completion: @escaping (AgentResponse) -> Void
@@ -20,6 +21,22 @@ extension BrowserAutomationService {
         }
         let start = CFAbsoluteTimeGetCurrent()
 
+        // Auth-wall gate: run async check, then continue on main actor.
+        Task { @MainActor in
+            if let blocked = await self.checkAuthWallBeforeInteraction(tab: tab, operation: "read") {
+                completion(blocked)
+                return
+            }
+            self.readPageContent(tab: tab, format: format, mode: mode,
+                                 query: query, budget: budget, start: start, completion: completion)
+        }
+    }
+
+    /// Inner implementation (runs after auth gate passes).
+    private func readPageContent(
+        tab: BrowserTab, format: String, mode: String?, query: String?, budget: Int?,
+        start: CFAbsoluteTime, completion: @escaping (AgentResponse) -> Void
+    ) {
         // For non-markdown formats, use simple extraction
         if format == "html" || format == "text" {
             let script = format == "html"
@@ -47,11 +64,11 @@ extension BrowserAutomationService {
         }
 
         // Markdown: use bounded extraction
-        readMarkdownCallback(tab: tab, mode: mode, budget: budget, query: query, start: start, completion: completion)
+        readMarkdownContent(tab: tab, mode: mode, budget: budget, query: query, start: start, completion: completion)
     }
 
     /// Markdown-specific callback extraction.
-    private func readMarkdownCallback(
+    private func readMarkdownContent(
         tab: BrowserTab, mode: String?, budget: Int?, query: String?,
         start: CFAbsoluteTime, completion: @escaping (AgentResponse) -> Void
     ) {

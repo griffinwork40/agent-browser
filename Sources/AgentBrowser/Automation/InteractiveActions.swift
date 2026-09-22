@@ -28,6 +28,23 @@ extension BrowserAutomationService {
         guard let tab = resolveTab(id) else {
             completion(.failure(code: ErrorCode.tabNotFound, message: "No tab with id: \(id)")); return
         }
+
+        // Auth-wall gate: run async check before allowing the action.
+        Task { @MainActor in
+            if let blocked = await self.checkAuthWallBeforeInteraction(tab: tab, operation: action) {
+                completion(blocked)
+                return
+            }
+            self.executeActionScript(tab: tab, elementId: elementId, action: action,
+                                     script: script, completion: completion)
+        }
+    }
+
+    /// Inner script execution (runs after auth gate passes).
+    private func executeActionScript(
+        tab: BrowserTab, elementId: String?, action: String,
+        script: String, completion: @escaping (AgentResponse) -> Void
+    ) {
         let tabID = tab.id.uuidString
         // The bridge lives in the isolated AgentBridge content world.
         tab.webView.evaluateJavaScript(script, in: nil, in: .world(name: "AgentBridge")) { resultOrError in
@@ -47,6 +64,11 @@ extension BrowserAutomationService {
     func asyncActionResponse(id: String, elementId: String?, action: String, value: String?) async -> AgentResponse {
         guard let tab = resolveTab(id) else {
             return .failure(code: ErrorCode.tabNotFound, message: "No tab with id: \(id)")
+        }
+
+        // Auth-wall gate.
+        if let blocked = await checkAuthWallBeforeInteraction(tab: tab, operation: action) {
+            return blocked
         }
 
         let script: String

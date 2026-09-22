@@ -15,12 +15,19 @@ import WebKit
 /// - `InteractiveAutomation.swift` -- page.inspect, page.click, page.fill, page.press, page.select, page.wait
 /// - `InteractiveActions.swift`    -- action execution & wait primitives
 /// - `AuthRouting.swift`           -- auth.status, auth.accounts, auth.fillFromKeychain, auth.requestHandoff
+/// - `AuthWallInterceptor.swift`   -- automatic auth-wall detection gate & session-expiry detection
+/// - `AuthWallTelemetry.swift`     -- in-memory auth-wall usage telemetry
 /// - `KeychainFill.swift`          -- Keychain credential lookup & fill
 /// - `PasskeyHandoff.swift`        -- Passkey/WebAuthn human-handoff
 @MainActor
 final class BrowserAutomationService {
     let tabManager: TabManager
     private(set) var takeoverHandler: TakeoverHandler
+
+    /// UUIDs of tabs whose `onNavigationDidFinish` callback has been wired for
+    /// session-expiry detection. Prevents double-wiring on repeated tab access.
+    /// Internal (not private) so the `closeTabResponse` extension can remove closed tabs.
+    var sessionExpiryWiredTabs: Set<UUID> = []
 
     init(tabManager: TabManager, takeoverHandler: TakeoverHandler) {
         self.tabManager = tabManager
@@ -215,7 +222,22 @@ final class BrowserAutomationService {
 
     func resolveTab(_ id: String) -> BrowserTab? {
         guard let uuid = UUID(uuidString: id) else { return nil }
-        return tabManager.tab(for: uuid)
+        guard let tab = tabManager.tab(for: uuid) else { return nil }
+        wireSessionExpiryIfNeeded(tab: tab)
+        return tab
+    }
+
+    /// Lazily wire the session-expiry navigation callback on first access.
+    /// Idempotent: second call for the same tab UUID is a no-op.
+    private func wireSessionExpiryIfNeeded(tab: BrowserTab) {
+        guard !sessionExpiryWiredTabs.contains(tab.id) else { return }
+        sessionExpiryWiredTabs.insert(tab.id)
+        tab.onNavigationDidFinish = { [weak self, weak tab] in
+            guard let self, let tab else { return }
+            Task { @MainActor in
+                await self.checkSessionExpiryAfterNavigation(tab: tab)
+            }
+        }
     }
 
     /// Evaluate JS using the callback API (NOT the async overload which crashes on void returns).
