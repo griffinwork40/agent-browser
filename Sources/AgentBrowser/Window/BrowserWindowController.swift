@@ -15,7 +15,10 @@ final class BrowserWindowController: NSWindowController {
     /// Back-reference to the window manager — injected after creation.
     /// Weak to avoid a retain cycle (manager owns controllers).
     weak var windowSessionManager: WindowSessionManager?
-
+    /// Agent activity data source — optional so windows without automation still compile.
+    var agentActivityStore: AgentActivityStore?
+    /// Handles human-takeover interactions for agent-controlled tabs.
+    var takeoverHandler: TakeoverHandler?
     /// Track which tab is currently displayed in the view hierarchy.
     private var displayedTabID: UUID?
 
@@ -34,20 +37,20 @@ final class BrowserWindowController: NSWindowController {
     // MARK: - Sidebar
     // sidebarHostingController and sidebarContainerView are `internal` (not private)
     // so BrowserWindowController+Sidebar.swift can reach them from the same module.
-
+    // Sidebar stored properties are internal (not private) so BrowserWindowController+Sidebar.swift
+    // can access them.
     var sidebarHostingController: NSHostingController<TabSidebarView>?
     let sidebarContainerView = NSView()
     var isSidebarVisible = true
     /// Stored so we can zero/restore it on toggle.
     var sidebarWidthConstraint: NSLayoutConstraint?
+    // Sidebar setup, update, toggle, profile dialogs, and makeSidebarView()
+    // live in BrowserWindowController+Sidebar.swift.
 
     // MARK: - Ghost Cursor
 
     /// Manages semi-transparent agent cursor overlays on the web content area.
     let ghostCursorController = GhostCursorController()
-
-    /// Reference to the activity store; set via setupGhostCursor(automationService:activityStore:).
-    var agentActivityStore: AgentActivityStore?
 
     // MARK: - KVO
 
@@ -212,32 +215,6 @@ final class BrowserWindowController: NSWindowController {
         ])
     }
 
-    // MARK: - Profile Actions
-
-    /// Switches to the given profile, preserving both profiles' workspaces (P2).
-    ///
-    /// Delegates to `performWorkspacePreservingSwitch(to:)` defined in
-    /// `BrowserWindowController+ProfileSwitch.swift`. Same-profile switching is a no-op.
-    func performProfileSwitch(to profileID: UUID) {
-        performWorkspacePreservingSwitch(to: profileID)
-    }
-
-
-    // MARK: - Sidebar Toggle
-
-    @objc func toggleSidebar(_ sender: Any?) {
-        isSidebarVisible.toggle()
-        let targetWidth: CGFloat = isSidebarVisible ? ControlSize.sidebarWidth : 0
-
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = Motion.standard
-            ctx.allowsImplicitAnimation = true
-            sidebarWidthConstraint?.constant = targetWidth
-            sidebarContainerView.isHidden = !isSidebarVisible
-            window?.contentView?.layoutSubtreeIfNeeded()
-        }
-    }
-
     // MARK: - Tab Display Sync
     // Sidebar setup, makeSidebarView, promptAndCreateProfile → BrowserWindowController+Sidebar.swift
 
@@ -268,13 +245,20 @@ final class BrowserWindowController: NSWindowController {
 
         // Add new tab's webview — skip if it is already mounted in webContentView
         // (e.g. cross-fade animation in +ProfileSwitch already added and constrained it).
+        // Position below the agent status bar (if visible) and apply its inset.
         displayedTabID = activeTab.id
         let wv = activeTab.webView
         if wv.superview !== webContentView {
             wv.translatesAutoresizingMaskIntoConstraints = false
-            webContentView.addSubview(wv)
+            // Ensure the status bar host view stays on top of the web content view
+            if let statusHost = controlStatusHostingController?.view {
+                webContentView.addSubview(wv, positioned: .below, relativeTo: statusHost)
+            } else {
+                webContentView.addSubview(wv)
+            }
+            let barInset = controlStatusHeightConstraint?.constant ?? 0
             NSLayoutConstraint.activate([
-                wv.topAnchor.constraint(equalTo: webContentView.topAnchor),
+                wv.topAnchor.constraint(equalTo: webContentView.topAnchor, constant: barInset),
                 wv.bottomAnchor.constraint(equalTo: webContentView.bottomAnchor),
                 wv.leadingAnchor.constraint(equalTo: webContentView.leadingAnchor),
                 wv.trailingAnchor.constraint(equalTo: webContentView.trailingAnchor),

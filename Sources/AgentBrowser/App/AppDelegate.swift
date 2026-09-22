@@ -33,7 +33,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var agentServer: AgentHTTPServer?
 
     // MARK: - Launch
-
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupMainMenu()
 
@@ -51,12 +50,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pm.contentBlockerManager = cbm
         self.profileManager = pm
 
-        let wsm = WindowSessionManager(
-            profileManager: pm,
+        let wsm = WindowSessionManager(            profileManager: pm,
             persistenceCoordinator: persistenceCoordinator
         )
         self.windowSessionManager = wsm
-
         // Bring the app to the front synchronously so the first window gets focus
         // immediately on launch rather than waiting for the async restore Task.
         NSApp.activate(ignoringOtherApps: true)

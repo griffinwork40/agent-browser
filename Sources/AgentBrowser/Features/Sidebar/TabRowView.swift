@@ -1,8 +1,8 @@
 // TabRowView.swift
 // A single tab row in the sidebar. Uses DesignSystem tokens throughout.
 // Renders: favicon circle, title + host, hover-revealed close button,
-// and a thumbnail popover after a 500ms hover delay.
-
+// thumbnail popover after a 500ms hover delay, agent indicator strip (left),
+// and a provenance badge next to the favicon.
 import SwiftUI
 
 struct TabRowView: View {
@@ -14,7 +14,11 @@ struct TabRowView: View {
     let onSelect: () -> Void
     let onClose: () -> Void
 
+    /// Agent data source — passed directly so the row stays a pure value-type view.
+    var agentActivityStore: AgentActivityStore?
+
     @State private var isHovered = false
+    @State private var isShowingActivityPopover = false
 
     // MARK: - Thumbnail popover state
 
@@ -23,42 +27,48 @@ struct TabRowView: View {
     @State private var hoverTimer: Timer?
 
     var body: some View {
-        Button(action: onSelect) {
-            HStack(spacing: Spacing.px8) {
-                faviconView
+        HStack(spacing: 0) {
+            // Left-edge agent indicator strip (3 pt wide, full row height)
+            agentIndicatorStrip
 
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(tab.title)
-                        .font(Typography.body)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
+            Button(action: onSelect) {
+                HStack(spacing: Spacing.px8) {
+                    faviconView
 
-                    if let host = tab.url?.host {
-                        Text(host)
-                            .font(Typography.caption)
-                            .foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(tab.title)
+                            .font(Typography.body)
                             .lineLimit(1)
-                            .truncationMode(.middle)
+                            .truncationMode(.tail)
+
+                        if let host = tab.url?.host {
+                            Text(host)
+                                .font(Typography.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                    }
+
+                    Spacer(minLength: Spacing.px4)
+
+                    // Close button appears on hover or when row is selected
+                    if isHovered || isSelected {
+                        IconButton(
+                            systemImage: "xmark",
+                            label: "Close tab",
+                            size: ControlSize.iconButtonSmall,
+                            action: onClose
+                        )
+                        .transition(.opacity)
                     }
                 }
-
-                Spacer(minLength: Spacing.px4)
-
-                // Close button appears on hover or when row is selected
-                if isHovered || isSelected {
-                    IconButton(
-                        systemImage: "xmark",
-                        label: "Close tab",
-                        size: ControlSize.iconButtonSmall,
-                        action: onClose
-                    )
-                    .transition(.opacity)
-                }
+                .padding(.horizontal, Spacing.px8)
+                .padding(.vertical, Spacing.px6)
+                .frame(height: ControlSize.tabRowHeight)
+                .background(rowBackground, in: .rect(cornerRadius: Radius.small))
             }
-            .padding(.horizontal, Spacing.px8)
-            .padding(.vertical, Spacing.px6)
-            .frame(height: ControlSize.tabRowHeight)
-            .background(rowBackground, in: .rect(cornerRadius: Radius.small))
+            .buttonStyle(.plain)
         }
         .buttonStyle(.plain)
         .popover(isPresented: $showPopover, arrowEdge: .trailing) {
@@ -78,6 +88,25 @@ struct TabRowView: View {
         .accessibilityValue(tab.url?.absoluteString ?? "")
         .accessibilityAddTraits(isSelected ? .isSelected : [])
         .animation(.easeInOut(duration: Motion.micro), value: isSelected)
+        .popover(isPresented: $isShowingActivityPopover, arrowEdge: .leading) {
+            activityPopoverContent
+        }
+    }
+
+    // MARK: - Agent Indicator Strip
+
+    /// 3 pt colored left border; tapping it opens the activity popover.
+    @ViewBuilder
+    private var agentIndicatorStrip: some View {
+        let state = agentActivityState
+        if state != .idle {
+            AgentIndicator(state: state, agentColorIndex: agentColorIndex)
+                .frame(width: 3, height: ControlSize.tabRowHeight)
+                .onTapGesture { isShowingActivityPopover = true }
+        } else {
+            // Reserve the 3 pt column so the row width stays stable.
+            Color.clear.frame(width: 3, height: ControlSize.tabRowHeight)
+        }
     }
 
     // MARK: - Hover / popover logic
@@ -104,7 +133,8 @@ struct TabRowView: View {
     // MARK: - Favicon
 
     /// Colored circle with the first letter of the domain.
-    /// Shows a spinner while loading; will be replaced with real favicon loading later.
+    /// Shows a spinner while loading. A `ProvenanceBadge` appears in the
+    /// bottom-right corner when the tab was created by an agent.
     /// When `profileColorName` is set, a 1.5pt colored ring is drawn around the circle.
     private var faviconView: some View {
         ZStack {
@@ -129,8 +159,45 @@ struct TabRowView: View {
                     .font(.system(size: 9, weight: .bold))
                     .foregroundStyle(isSelected ? .white : .primary)
             }
+
+            // Provenance badge: bottom-right overlay on the favicon circle
+            ProvenanceBadge(provenance: tab.record.provenance)
+                .frame(width: 10, height: 10)
+                .offset(x: 6, y: 6)
         }
         .frame(width: 20, height: 20)
+    }
+
+    // MARK: - Activity Popover Content
+
+    @ViewBuilder
+    private var activityPopoverContent: some View {
+        if let store = agentActivityStore,
+           let agent = store.activeAgentForTab(tab.id) {
+            let tabActions = store.actionsForTab(tab.id)
+            let recent = store.recentActions.filter { $0.tabID == tab.id }
+            let actions = Array((tabActions + recent).prefix(20))
+            AgentActivityPopover(
+                agentName: agent.displayName,
+                agentColorIndex: agent.colorIndex,
+                actions: actions,
+                onPause:  nil,
+                onResume: nil,
+                onEnd:    nil
+            )
+        }
+    }
+
+    // MARK: - Agent State Helpers
+
+    private var agentActivityState: AgentActivityState {
+        guard let store = agentActivityStore else { return .idle }
+        if store.isTabAgentControlled(tab.id) { return .working }
+        return .idle
+    }
+
+    private var agentColorIndex: Int {
+        agentActivityStore?.activeAgentForTab(tab.id)?.colorIndex ?? 0
     }
 
     // MARK: - Profile color helper
