@@ -124,7 +124,7 @@ struct AgentPermissionTests {
     @MainActor func checkReadDenied() {
         let store = makeStore()
         store.setPermissions(for: "noread", AgentPermissionSet(
-            canRead: false, canWrite: true, canClick: true, canNavigate: true, canEval: true
+            canRead: false, canWrite: true, canClick: true, canNavigate: true, canEval: true, canAdmin: false
         ))
         if case .success = store.checkPermission(agentID: "noread", method: "page.read") {
             Issue.record("page.read should be denied when canRead is false")
@@ -215,21 +215,102 @@ struct AgentPermissionTests {
     @MainActor func permissionsGetAlwaysAllowed() {
         let store = makeStore()
         store.setPermissions(for: "restricted", AgentPermissionSet(
-            canRead: false, canWrite: false, canClick: false, canNavigate: false, canEval: false
+            canRead: false, canWrite: false, canClick: false, canNavigate: false, canEval: false, canAdmin: false
         ))
         if case .failure = store.checkPermission(agentID: "restricted", method: "agent.permissions.get") {
             Issue.record("agent.permissions.get should always be allowed")
         }
     }
 
-    @Test("agent.permissions.set is always permitted")
-    @MainActor func permissionsSetAlwaysAllowed() {
+    @Test("agent.permissions.set is denied without canAdmin — prevents privilege escalation")
+    @MainActor func permissionsSetDeniedWithoutAdmin() {
         let store = makeStore()
+        // A restricted agent with no canAdmin cannot call agent.permissions.set
         store.setPermissions(for: "restricted", AgentPermissionSet(
-            canRead: false, canWrite: false, canClick: false, canNavigate: false, canEval: false
+            canRead: false, canWrite: false, canClick: false,
+            canNavigate: false, canEval: false, canAdmin: false
         ))
-        if case .failure = store.checkPermission(agentID: "restricted", method: "agent.permissions.set") {
-            Issue.record("agent.permissions.set should always be allowed")
+        if case .success = store.checkPermission(agentID: "restricted", method: "agent.permissions.set") {
+            Issue.record("agent.permissions.set must be denied when canAdmin is false — restricted agent could escalate itself")
+        }
+    }
+
+    @Test("agent.permissions.set is allowed when canAdmin is true")
+    @MainActor func permissionsSetAllowedForAdmin() {
+        let store = makeStore()
+        store.setPermissions(for: "admin", .full) // full preset includes canAdmin=true
+        if case .failure = store.checkPermission(agentID: "admin", method: "agent.permissions.set") {
+            Issue.record("agent.permissions.set should be allowed for an agent with canAdmin")
+        }
+    }
+
+    @Test("domain allowlist blocks navigation to non-listed host")
+    @MainActor func domainAllowlistBlocksNavigation() {
+        let store = makeStore()
+        var perms = AgentPermissionSet.full
+        perms.allowedDomains = ["trusted.com"]
+        store.setPermissions(for: "scoped-bot", perms)
+        // A URL outside the allowlist must be rejected
+        if case .success = store.checkPermission(agentID: "scoped-bot", method: "tabs.open",
+                                                  url: "https://evil.com/page") {
+            Issue.record("tabs.open to a non-allowlisted domain should be denied")
+        }
+    }
+
+    @Test("domain allowlist permits navigation to listed host")
+    @MainActor func domainAllowlistPermitsNavigation() {
+        let store = makeStore()
+        var perms = AgentPermissionSet.full
+        perms.allowedDomains = ["trusted.com"]
+        store.setPermissions(for: "scoped-bot", perms)
+        if case .failure = store.checkPermission(agentID: "scoped-bot", method: "tabs.open",
+                                                  url: "https://trusted.com/path") {
+            Issue.record("tabs.open to an allowlisted domain should be permitted")
+        }
+    }
+
+    @Test("domain allowlist permits navigation to subdomain of listed host")
+    @MainActor func domainAllowlistPermitsSubdomain() {
+        let store = makeStore()
+        var perms = AgentPermissionSet.full
+        perms.allowedDomains = ["trusted.com"]
+        store.setPermissions(for: "scoped-bot", perms)
+        if case .failure = store.checkPermission(agentID: "scoped-bot", method: "tabs.navigate",
+                                                  url: "https://api.trusted.com/v1") {
+            Issue.record("tabs.navigate to a subdomain of an allowlisted domain should be permitted")
+        }
+    }
+
+    @Test("auth.status is denied for agent with canRead=false")
+    @MainActor func authStatusDeniedWithoutRead() {
+        let store = makeStore()
+        store.setPermissions(for: "no-read-bot", AgentPermissionSet(
+            canRead: false, canWrite: false, canClick: false,
+            canNavigate: false, canEval: false, canAdmin: false
+        ))
+        if case .success = store.checkPermission(agentID: "no-read-bot", method: "auth.status") {
+            Issue.record("auth.status must be denied when canRead is false")
+        }
+    }
+
+    @Test("auth.fillFromKeychain is denied for agent with canRead=false")
+    @MainActor func authFillDeniedWithoutRead() {
+        let store = makeStore()
+        store.setPermissions(for: "no-read-bot", AgentPermissionSet(
+            canRead: false, canWrite: false, canClick: false,
+            canNavigate: false, canEval: false, canAdmin: false
+        ))
+        if case .success = store.checkPermission(agentID: "no-read-bot", method: "auth.fillFromKeychain") {
+            Issue.record("auth.fillFromKeychain must be denied when canRead is false")
+        }
+    }
+
+    @Test("auth.status is allowed for readOnly agent (canRead=true)")
+    @MainActor func authStatusAllowedForReadOnly() {
+        let store = makeStore()
+        store.setPermissions(for: "reader", .readOnly)
+        if case .failure = store.checkPermission(agentID: "reader", method: "auth.status") {
+            Issue.record("auth.status should be allowed for readOnly agent which has canRead=true")
         }
     }
 

@@ -64,8 +64,10 @@ final class BrowserAutomationService {
         let params = request.params?.mapValues(\.value) ?? [:]
 
         // Permission check: extract agentID from params (optional; unknown agents get .full)
+        // Also extract 'url' so domain enforcement can run for navigation methods.
         let agentID = params["agentID"] as? String ?? ""
-        if case .failure(let err) = permissionStore.checkPermission(agentID: agentID, method: request.method) {
+        let urlParam = params["url"] as? String
+        if case .failure(let err) = permissionStore.checkPermission(agentID: agentID, method: request.method, url: urlParam) {
             completion(.failure(code: ErrorCode.permissionDenied, message: err.message))
             return
         }
@@ -177,9 +179,10 @@ final class BrowserAutomationService {
 
         let params = request.params?.mapValues(\.value) ?? [:]
 
-        // Permission check
+        // Permission check; also pass 'url' for domain enforcement on navigation methods.
         let agentID = params["agentID"] as? String ?? ""
-        if case .failure(let err) = permissionStore.checkPermission(agentID: agentID, method: request.method) {
+        let urlParam = params["url"] as? String
+        if case .failure(let err) = permissionStore.checkPermission(agentID: agentID, method: request.method, url: urlParam) {
             return .failure(code: ErrorCode.permissionDenied, message: err.message)
         }
 
@@ -299,7 +302,8 @@ final class BrowserAutomationService {
     }
 
     /// Applies a partial permission update from params dict.
-    /// Accepted keys: canRead, canWrite, canClick, canNavigate, canEval, allowedDomains.
+    /// Accepted keys: canRead, canWrite, canClick, canNavigate, canEval, canAdmin, allowedDomains.
+    /// Callers reach this only after checkPermission has verified canAdmin on the requesting agent.
     private func agentPermissionsSetResponse(agentID: String, params: [String: Any]) -> AgentResponse {
         var perms = permissionStore.permissions(for: agentID)
         if let v = params["canRead"] as? Bool { perms.canRead = v }
@@ -307,6 +311,7 @@ final class BrowserAutomationService {
         if let v = params["canClick"] as? Bool { perms.canClick = v }
         if let v = params["canNavigate"] as? Bool { perms.canNavigate = v }
         if let v = params["canEval"] as? Bool { perms.canEval = v }
+        if let v = params["canAdmin"] as? Bool { perms.canAdmin = v }
         if let domains = params["allowedDomains"] as? [String] {
             perms.allowedDomains = domains
         } else if let null = params["allowedDomains"], null is NSNull {
