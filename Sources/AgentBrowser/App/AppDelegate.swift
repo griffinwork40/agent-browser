@@ -19,6 +19,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // `internal` so AppDelegate+Extensions.swift can access it.
     var extensionManager: ExtensionManager?
 
+    /// Content blocker: created before TabManager so ProfileManager can use it.
+    private var contentBlockerManager: ContentBlockerManager?
+
     // Persistence coordinator: sessions, history, auto-save.
     private let persistenceCoordinator = PersistenceCoordinator()
 
@@ -28,8 +31,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let em = ExtensionManager()
         self.extensionManager = em
 
+        let cbm = ContentBlockerManager()
+        self.contentBlockerManager = cbm
+
         let pm = ProfileManager()
         pm.extensionManager = em
+        pm.contentBlockerManager = cbm
         self.profileManager = pm
 
         let tm = TabManager(profileManager: pm)
@@ -57,6 +64,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Runs async to avoid blocking the main thread during disk I/O,
         // but stays on MainActor so TabManager mutations are safe.
         Task { @MainActor in
+            // Start content blocker setup (downloads filter lists if stale).
+            await cbm.setUp()
+
             await persistenceCoordinator.setUp(defaultProfileID: pm.activeProfileID)
 
             // P4: Restore per-profile workspaces (v2 path; migrates legacy flat tabs).
@@ -211,6 +221,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         // Intentionally empty: all quit persistence is handled in
         // applicationShouldTerminate(_:) above to allow async awaiting.
+    }
+
+    // MARK: - Content Blocking
+
+    @objc @MainActor private func toggleContentBlocking(_ sender: NSMenuItem) {
+        contentBlockerManager?.toggleEnabled()
+        sender.state = (contentBlockerManager?.isEnabled ?? false) ? .on : .off
     }
 
     // MARK: - Extensions Panel (see AppDelegate+Extensions.swift)

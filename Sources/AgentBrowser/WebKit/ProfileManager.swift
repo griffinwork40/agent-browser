@@ -28,6 +28,9 @@ final class ProfileManager {
     /// every new ``WKWebViewConfiguration``.
     weak var extensionManager: ExtensionManager?
 
+    /// Injected content blocker. Nil until AppDelegate wires it in after setUp().
+    var contentBlockerManager: ContentBlockerManager?
+
     /// Production initialiser. Persists to Application Support/AgentBrowser/profiles.json.
     convenience init() {
         let appSupport = FileManager.default
@@ -106,6 +109,9 @@ final class ProfileManager {
            let controller = extensionManager?.extensionController {
             config.webExtensionController = controller
         }
+
+        // Apply content-blocking rules if a manager has been wired in.
+        contentBlockerManager?.applyRules(to: config)
 
         return config
     }
