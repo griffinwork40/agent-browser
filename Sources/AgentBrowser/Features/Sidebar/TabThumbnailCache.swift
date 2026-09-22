@@ -55,8 +55,11 @@ final class TabThumbnailCache {
 
         guard let image = await takeSnapshot(of: tab.webView) else { return nil }
 
-        // A navigation may have invalidated the entry while we were snapshotting.
-        // Only store if the tab still exists in the cache (not explicitly evicted).
+        // A navigation may have called invalidate(tabID:) while we were awaiting
+        // the snapshot. If the id is no longer in lruOrder it was evicted/invalidated
+        // during the async gap — discard the stale image rather than re-inserting it.
+        guard lruOrder.contains(id) || storage[id] != nil else { return nil }
+
         store(id: id, image: image)
         return image
     }

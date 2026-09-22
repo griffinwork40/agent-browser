@@ -70,6 +70,10 @@ struct TabRowView: View {
             }
             handleHover(hovered)
         }
+        .onDisappear {
+            hoverTimer?.invalidate()
+            hoverTimer = nil
+        }
         .accessibilityLabel(tab.title)
         .accessibilityValue(tab.url?.absoluteString ?? "")
         .accessibilityAddTraits(isSelected ? .isSelected : [])
