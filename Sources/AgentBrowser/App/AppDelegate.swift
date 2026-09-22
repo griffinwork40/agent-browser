@@ -154,9 +154,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
             // Wire agent HTTP server and ghost cursor against the first window's tab manager.
             if let firstWC = wsm.windowControllers.first {
+                let permissionStore = AgentPermissionStore()
                 let automationService = BrowserAutomationService(
                     tabManager: firstWC.tabManager,
-                    takeoverHandler: TakeoverHandler()
+                    takeoverHandler: TakeoverHandler(),
+                    permissionStore: permissionStore
                 )
                 agentServer = AgentHTTPServer(automationService: automationService)
                 agentServer?.start()

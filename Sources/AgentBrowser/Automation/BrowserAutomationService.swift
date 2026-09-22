@@ -23,6 +23,7 @@ import WebKit
 final class BrowserAutomationService {
     let tabManager: TabManager
     private(set) var takeoverHandler: TakeoverHandler
+    var permissionStore: AgentPermissionStore
 
     /// UUIDs of tabs whose `onNavigationDidFinish` callback has been wired for
     /// session-expiry detection. Prevents double-wiring on repeated tab access.
@@ -33,9 +34,20 @@ final class BrowserAutomationService {
     /// Weak to avoid a retain cycle between the service and the window controller.
     weak var ghostCursorDelegate: GhostCursorDelegate?
 
-    init(tabManager: TabManager, takeoverHandler: TakeoverHandler) {
+    init(
+        tabManager: TabManager,
+        takeoverHandler: TakeoverHandler,
+        permissionStore: AgentPermissionStore
+    ) {
         self.tabManager = tabManager
         self.takeoverHandler = takeoverHandler
+        self.permissionStore = permissionStore
+    }
+
+    /// Convenience initializer for tests. Creates a fresh store with default (.full) permissions.
+    convenience init(tabManager: TabManager, takeoverHandler: TakeoverHandler) {
+        self.init(tabManager: tabManager, takeoverHandler: takeoverHandler,
+                  permissionStore: AgentPermissionStore())
     }
 
     // MARK: - Callback-based Dispatch (for HTTP server)
@@ -51,7 +63,26 @@ final class BrowserAutomationService {
 
         let params = request.params?.mapValues(\.value) ?? [:]
 
+        // Permission check: extract agentID from params (optional; unknown agents get .full)
+        // Also extract 'url' so domain enforcement can run for navigation methods.
+        let agentID = params["agentID"] as? String ?? ""
+        let urlParam = params["url"] as? String
+        if case .failure(let err) = permissionStore.checkPermission(agentID: agentID, method: request.method, url: urlParam) {
+            completion(.failure(code: ErrorCode.permissionDenied, message: err.message))
+            return
+        }
+
         switch request.method {
+        // Agent permission management
+        case "agent.permissions.get":
+            let targetID = (params["agentID"] as? String) ?? agentID
+            completion(agentPermissionsGetResponse(agentID: targetID))
+        case "agent.permissions.set":
+            guard let targetID = params["agentID"] as? String else {
+                completion(.failure(code: ErrorCode.invalidParams, message: "Missing 'agentID' parameter")); return
+            }
+            completion(agentPermissionsSetResponse(agentID: targetID, params: params))
+
         // Tab operations
         case "tabs.list":
             completion(.success(listTabs()))
@@ -148,7 +179,24 @@ final class BrowserAutomationService {
 
         let params = request.params?.mapValues(\.value) ?? [:]
 
+        // Permission check; also pass 'url' for domain enforcement on navigation methods.
+        let agentID = params["agentID"] as? String ?? ""
+        let urlParam = params["url"] as? String
+        if case .failure(let err) = permissionStore.checkPermission(agentID: agentID, method: request.method, url: urlParam) {
+            return .failure(code: ErrorCode.permissionDenied, message: err.message)
+        }
+
         switch request.method {
+        // Agent permission management
+        case "agent.permissions.get":
+            let targetID = (params["agentID"] as? String) ?? agentID
+            return agentPermissionsGetResponse(agentID: targetID)
+        case "agent.permissions.set":
+            guard let targetID = params["agentID"] as? String else {
+                return .failure(code: ErrorCode.invalidParams, message: "Missing 'agentID' parameter")
+            }
+            return agentPermissionsSetResponse(agentID: targetID, params: params)
+
         // Tab operations
         case "tabs.list":
             return .success(listTabs())
@@ -243,6 +291,34 @@ final class BrowserAutomationService {
             }
             return .failure(code: ErrorCode.unknownMethod, message: "Unknown method: \(request.method)")
         }
+    }
+
+    // MARK: - Permission Management Helpers
+
+    /// Returns the current permission set for the requested agentID.
+    private func agentPermissionsGetResponse(agentID: String) -> AgentResponse {
+        let perms = permissionStore.permissions(for: agentID)
+        return .success(perms)
+    }
+
+    /// Applies a partial permission update from params dict.
+    /// Accepted keys: canRead, canWrite, canClick, canNavigate, canEval, canAdmin, allowedDomains.
+    /// Callers reach this only after checkPermission has verified canAdmin on the requesting agent.
+    private func agentPermissionsSetResponse(agentID: String, params: [String: Any]) -> AgentResponse {
+        var perms = permissionStore.permissions(for: agentID)
+        if let v = params["canRead"] as? Bool { perms.canRead = v }
+        if let v = params["canWrite"] as? Bool { perms.canWrite = v }
+        if let v = params["canClick"] as? Bool { perms.canClick = v }
+        if let v = params["canNavigate"] as? Bool { perms.canNavigate = v }
+        if let v = params["canEval"] as? Bool { perms.canEval = v }
+        if let v = params["canAdmin"] as? Bool { perms.canAdmin = v }
+        if let domains = params["allowedDomains"] as? [String] {
+            perms.allowedDomains = domains
+        } else if let null = params["allowedDomains"], null is NSNull {
+            perms.allowedDomains = nil
+        }
+        permissionStore.setPermissions(for: agentID, perms)
+        return .success(perms)
     }
 
     // MARK: - Shared Helpers
