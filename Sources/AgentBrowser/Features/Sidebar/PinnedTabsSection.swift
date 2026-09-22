@@ -10,6 +10,7 @@ struct PinnedTabsSection: View {
     let pinnedTabs: [BrowserTab]   // empty for V1
     let selectedTabID: UUID?
     let onSelect: (BrowserTab) -> Void
+    var thumbnailCache: TabThumbnailCache = TabThumbnailCache()
 
     var body: some View {
         if !pinnedTabs.isEmpty {
@@ -19,6 +20,7 @@ struct PinnedTabsSection: View {
                         tab: tab,
                         isSelected: tab.id == selectedTabID,
                         profileColorName: nil,
+                        thumbnailCache: thumbnailCache,
                         onSelect: { onSelect(tab) },
                         onClose: {}   // pinned tabs cannot be closed from sidebar
                     )

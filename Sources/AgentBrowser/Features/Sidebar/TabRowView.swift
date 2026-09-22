@@ -1,6 +1,7 @@
 // TabRowView.swift
 // A single tab row in the sidebar. Uses DesignSystem tokens throughout.
-// Renders: favicon circle, title + host, hover-revealed close button.
+// Renders: favicon circle, title + host, hover-revealed close button,
+// and a thumbnail popover after a 500ms hover delay.
 
 import SwiftUI
 
@@ -9,10 +10,17 @@ struct TabRowView: View {
     let tab: BrowserTab        // @Observable — SwiftUI auto-tracks title/url/isLoading
     let isSelected: Bool
     let profileColorName: String?
+    let thumbnailCache: TabThumbnailCache
     let onSelect: () -> Void
     let onClose: () -> Void
 
     @State private var isHovered = false
+
+    // MARK: - Thumbnail popover state
+
+    @State private var showPopover   = false
+    @State private var thumbnail: NSImage?
+    @State private var hoverTimer: Timer?
 
     var body: some View {
         Button(action: onSelect) {
@@ -53,15 +61,44 @@ struct TabRowView: View {
             .background(rowBackground, in: .rect(cornerRadius: Radius.small))
         }
         .buttonStyle(.plain)
+        .popover(isPresented: $showPopover, arrowEdge: .trailing) {
+            TabThumbnailPopover(tab: tab, thumbnail: thumbnail)
+        }
         .onHover { hovered in
             withAnimation(.easeInOut(duration: Motion.micro)) {
                 isHovered = hovered
             }
+            handleHover(hovered)
+        }
+        .onDisappear {
+            hoverTimer?.invalidate()
+            hoverTimer = nil
         }
         .accessibilityLabel(tab.title)
         .accessibilityValue(tab.url?.absoluteString ?? "")
         .accessibilityAddTraits(isSelected ? .isSelected : [])
         .animation(.easeInOut(duration: Motion.micro), value: isSelected)
+    }
+
+    // MARK: - Hover / popover logic
+
+    private func handleHover(_ hovered: Bool) {
+        if hovered {
+            // Start a 500ms delay before showing the popover.
+            hoverTimer?.invalidate()
+            hoverTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: false) { _ in
+                Task { @MainActor in
+                    // Prefetch the thumbnail while waiting — result lands before popover opens.
+                    thumbnail = await thumbnailCache.thumbnail(for: tab)
+                    showPopover = true
+                }
+            }
+        } else {
+            // Cancel timer and dismiss popover immediately on mouse-out.
+            hoverTimer?.invalidate()
+            hoverTimer = nil
+            showPopover = false
+        }
     }
 
     // MARK: - Favicon
