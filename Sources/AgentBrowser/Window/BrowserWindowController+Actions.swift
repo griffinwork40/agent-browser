@@ -5,6 +5,39 @@
 import AppKit
 import WebKit
 
+// MARK: - Content Search Panel (associated-object storage)
+
+extension BrowserWindowController {
+
+    /// Retained reference to the floating content-search panel.
+    var contentSearchPanel: ContentSearchPanel? {
+        get { objc_getAssociatedObject(self, &Self.contentSearchPanelKey) as? ContentSearchPanel }
+        set { objc_setAssociatedObject(self, &Self.contentSearchPanelKey, newValue, .OBJC_ASSOCIATION_RETAIN_NONATOMIC) }
+    }
+    private static var contentSearchPanelKey: UInt8 = 2
+
+    /// Opens (or re-opens) the cross-tab content search panel (Cmd-Shift-F).
+    @objc func showContentSearch(_ sender: Any?) {
+        // Close any existing panel first (re-trigger refreshes the tab snapshot)
+        contentSearchPanel?.close()
+        contentSearchPanel = nil
+
+        let panel = ContentSearchPanel(
+            tabs: tabManager.tabs,
+            onSelectTab: { [weak self] tabID in
+                guard let self else { return }
+                if let tab = self.tabManager.tab(for: tabID) {
+                    self.tabManager.select(tab: tab)
+                    self.syncDisplayedTab()
+                    self.updateSidebar()
+                }
+            }
+        )
+        contentSearchPanel = panel
+        panel.showCentered(relativeTo: window)
+    }
+}
+
 // MARK: - Tab Actions (Menu / Keyboard targets)
 
 extension BrowserWindowController {

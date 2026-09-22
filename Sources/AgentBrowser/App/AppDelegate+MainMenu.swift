@@ -74,6 +74,13 @@ extension AppDelegate {
             action: #selector(BrowserWindowController.performFind(_:)),
             keyEquivalent: "f"
         ))
+        let searchAllTabs = NSMenuItem(
+            title: "Search All Tabs",
+            action: #selector(BrowserWindowController.showContentSearch(_:)),
+            keyEquivalent: "f"
+        )
+        searchAllTabs.keyEquivalentModifierMask = [.command, .shift]
+        menu.addItem(searchAllTabs)
         let item = NSMenuItem()
         item.submenu = menu
         return item
