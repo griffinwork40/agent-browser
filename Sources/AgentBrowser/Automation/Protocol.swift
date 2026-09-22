@@ -40,6 +40,16 @@ struct AgentErrorDetail: Codable, Sendable, Error {
 
 // MARK: - Error Codes (constants)
 
+// MARK: - Result Types (shared across automation extensions)
+
+/// Response payload for the page.cursor.position method.
+struct CursorPositionResult: Codable, Sendable {
+    let ok: Bool
+    let id: String
+    let x: Double
+    let y: Double
+}
+
 enum ErrorCode {
     static let tabNotFound = "TAB_NOT_FOUND"
     static let invalidParams = "INVALID_PARAMS"
