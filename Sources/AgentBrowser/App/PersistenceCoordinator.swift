@@ -1,4 +1,5 @@
 import AppKit
+import GRDB
 
 /// Bridges the persistence layer (SessionStore, HistoryStore, BookmarkStore,
 /// PersistenceManager) into the app lifecycle. Owned by AppDelegate.
@@ -26,6 +27,10 @@ final class PersistenceCoordinator {
 
     /// Per-profile bookmark stores, keyed by profile UUID.
     private var bookmarkStores: [UUID: BookmarkStore] = [:]
+
+    /// Per-profile DatabaseManager instances, keyed by profile UUID.
+    /// Retains open GRDB pools for the lifetime of the coordinator.
+    private var databaseManagers: [UUID: DatabaseManager] = [:]
 
     /// The profile UUID passed to `setUp(defaultProfileID:)`.
     /// Used by the back-compat shims to return a deterministic store.
@@ -60,11 +65,11 @@ final class PersistenceCoordinator {
 
     // MARK: - Bootstrap
 
-    /// Asynchronously initialises all stores from `PersistenceManager.shared`.
+    /// Asynchronously initialises all stores for the default profile via `DatabaseManager`.
     ///
     /// - Parameter defaultProfileID: The UUID of the app's first / default profile.
     ///   Used to:
-    ///   1. Create the initial per-profile HistoryStore and BookmarkStore.
+    ///   1. Create the initial per-profile HistoryStore and BookmarkStore backed by GRDB.
     ///   2. Perform a one-time migration of any flat `history.json` /
     ///      `bookmarks.json` files from the app-support root into the default
     ///      profile's subdirectory, so existing data is not lost on upgrade.
@@ -83,8 +88,18 @@ final class PersistenceCoordinator {
         // One-time migration: move flat files from root into default profile dir.
         await Self.migrateRootFiles(from: rootDir, to: profileDir)
 
-        historyStores[defaultProfileID] = HistoryStore(dataDirectory: profileDir)
-        bookmarkStores[defaultProfileID] = BookmarkStore(dataDirectory: profileDir)
+        // Open a GRDB DatabaseManager for the default profile. Falls back to
+        // the dataDirectory convenience inits if the DB cannot be opened.
+        do {
+            let dbManager = try DatabaseManager(directory: profileDir)
+            databaseManagers[defaultProfileID] = dbManager
+            historyStores[defaultProfileID]  = HistoryStore(dbWriter: dbManager.historyWriter)
+            bookmarkStores[defaultProfileID] = BookmarkStore(dbWriter: dbManager.browserWriter)
+        } catch {
+            fputs("PersistenceCoordinator.setUp: DatabaseManager failed for default profile: \(error)\n", stderr)
+            historyStores[defaultProfileID]  = HistoryStore(dataDirectory: profileDir)
+            bookmarkStores[defaultProfileID] = BookmarkStore(dataDirectory: profileDir)
+        }
     }
 
     // MARK: - Migration
@@ -290,13 +305,17 @@ final class PersistenceCoordinator {
 
     /// Returns the HistoryStore for `profileID`, creating it on demand if needed.
     ///
-    /// Stores created on demand are fully functional but do NOT perform the
-    /// one-time root migration (that only runs during `setUp`). This covers
-    /// profiles created after initial launch — they start with an empty store.
+    /// Opens a GRDB `DatabaseManager` for the profile directory and wires the
+    /// store to the shared pool. Falls back to the dataDirectory convenience init
+    /// if the DB cannot be opened.
+    ///
+    /// Stores created on demand do NOT perform the one-time root migration (that
+    /// only runs during `setUp`). This covers profiles created after initial
+    /// launch — they start with an empty store.
     func makeHistoryStore(for profileID: UUID) async -> HistoryStore {
         if let existing = historyStores[profileID] { return existing }
         let dir = await PersistenceManager.shared.profileDataDirectory(for: profileID)
-        let store = HistoryStore(dataDirectory: dir)
+        let store = await openHistoryStore(for: profileID, directory: dir)
         historyStores[profileID] = store
         return store
     }
@@ -305,7 +324,7 @@ final class PersistenceCoordinator {
     func makeBookmarkStore(for profileID: UUID) async -> BookmarkStore {
         if let existing = bookmarkStores[profileID] { return existing }
         let dir = await PersistenceManager.shared.profileDataDirectory(for: profileID)
-        let store = BookmarkStore(dataDirectory: dir)
+        let store = await openBookmarkStore(for: profileID, directory: dir)
         bookmarkStores[profileID] = store
         return store
     }
@@ -324,6 +343,40 @@ final class PersistenceCoordinator {
     func makeBookmarkStore() -> BookmarkStore? {
         guard let id = defaultProfileID else { return nil }
         return bookmarkStores[id]
+    }
+
+    // MARK: - Private helpers
+
+    /// Opens or reuses a `DatabaseManager` for `profileID` / `directory` and
+    /// returns the HistoryStore wired to its history pool.
+    private func openHistoryStore(for profileID: UUID, directory: URL) async -> HistoryStore {
+        if let dbManager = databaseManagers[profileID] {
+            return HistoryStore(dbWriter: dbManager.historyWriter)
+        }
+        do {
+            let dbManager = try DatabaseManager(directory: directory)
+            databaseManagers[profileID] = dbManager
+            return HistoryStore(dbWriter: dbManager.historyWriter)
+        } catch {
+            fputs("PersistenceCoordinator: DatabaseManager failed for profile \(profileID): \(error)\n", stderr)
+            return HistoryStore(dataDirectory: directory)
+        }
+    }
+
+    /// Opens or reuses a `DatabaseManager` for `profileID` / `directory` and
+    /// returns the BookmarkStore wired to its browser pool.
+    private func openBookmarkStore(for profileID: UUID, directory: URL) async -> BookmarkStore {
+        if let dbManager = databaseManagers[profileID] {
+            return BookmarkStore(dbWriter: dbManager.browserWriter)
+        }
+        do {
+            let dbManager = try DatabaseManager(directory: directory)
+            databaseManagers[profileID] = dbManager
+            return BookmarkStore(dbWriter: dbManager.browserWriter)
+        } catch {
+            fputs("PersistenceCoordinator: DatabaseManager failed for profile \(profileID): \(error)\n", stderr)
+            return BookmarkStore(dataDirectory: directory)
+        }
     }
 
     // MARK: - Test Hooks

@@ -1,4 +1,5 @@
 import Foundation
+import GRDB
 
 // MARK: - SessionSnapshot
 
@@ -76,51 +77,91 @@ struct SessionSnapshot: Codable, Sendable {
 
 // MARK: - SessionStore
 
-/// Persists and restores a single browser session as a JSON file.
+/// Persists and restores a single browser session.
 ///
-/// There is intentionally only one session slot (the last-used session).
-/// Named session history can be layered on top later.
+/// The entire `SessionSnapshot` is JSON-encoded and stored as a single row in the
+/// `browserSession` table (key = "current"). This approach preserves the existing
+/// Codable snapshot format unchanged — callers and existing tests need no changes.
+///
+/// When the backing database cannot be opened (e.g. the directory does not exist),
+/// `dbWriter` is `nil` and every write returns `false`, matching the error
+/// behaviour of the previous JSON-based implementation.
 actor SessionStore {
-    private let fileURL: URL
+    /// Non-nil for a healthy store; nil when the database could not be opened.
+    private let dbWriter: (any DatabaseWriter)?
 
+    // MARK: - Init
+
+    /// Primary init: supplied by `PersistenceCoordinator` via `DatabaseManager`.
+    init(dbWriter: any DatabaseWriter) {
+        self.dbWriter = dbWriter
+    }
+
+    /// Convenience init for tests and the legacy `PersistenceCoordinator.setUp()` path.
+    ///
+    /// Opens a `DatabasePool` for `browser.db` inside `dataDirectory` and runs the
+    /// browser migrator.  When `dataDirectory` does not exist (or is not writable),
+    /// the `DatabasePool` open fails and `dbWriter` is stored as `nil`; subsequent
+    /// writes return `false`, preserving the same observable behaviour as the
+    /// previous JSON-based store on an unwritable path.
     init(dataDirectory: URL) {
-        self.fileURL = dataDirectory.appendingPathComponent("session.json")
+        // Note: we do NOT call createDirectory here so that a non-existent
+        // directory causes DatabasePool to fail — which lets saveWorkspaces
+        // return `false`, matching the contract expected by existing tests.
+        do {
+            let pool = try DatabasePool(
+                path: dataDirectory.appendingPathComponent("browser.db").path)
+            try DatabaseSetup.browserMigrator.migrate(pool)
+            self.dbWriter = pool
+        } catch {
+            fputs("SessionStore(dataDirectory:) could not open DB: \(error)\n", stderr)
+            self.dbWriter = nil
+        }
     }
 
     // MARK: - Write
 
-    /// Atomically writes the current tab set to disk.
+    /// Atomically writes the current tab set to the database.
     func save(tabs: [SessionSnapshot.TabSnapshot], selectedTabID: UUID?) {
         let snapshot = SessionSnapshot(
             tabs: tabs,
             selectedTabID: selectedTabID,
             savedAt: Date()
         )
-        guard let data = try? JSONEncoder().encode(snapshot) else { return }
-        try? data.write(to: fileURL, options: .atomic)
+        guard let jsonString = encode(snapshot), let db = dbWriter else { return }
+        do {
+            try db.write { connection in
+                try connection.execute(
+                    sql: """
+                    INSERT OR REPLACE INTO browserSession (key, snapshotJSON, savedAt)
+                    VALUES ('current', ?, ?)
+                    """,
+                    arguments: [jsonString, Date()]
+                )
+            }
+        } catch {
+            fputs("SessionStore.save: \(error)\n", stderr)
+        }
     }
 
-    /// Atomically writes per-profile workspaces to disk alongside the legacy flat array.
+    /// Atomically writes per-profile workspaces alongside the backward-compatible
+    /// legacy flat `tabs` array (populated from the active profile's workspace).
     ///
-    /// The legacy `tabs` + `selectedTabID` fields are populated from `activeWorkspace`
-    /// so that any reader without workspace support still sees a usable session.
-    ///
-    /// - Returns: `true` if the write succeeded; `false` if encode or write failed.
-    ///   Callers on the quit path should treat `false` as a write failure and may
-    ///   log or surface the error before allowing termination to proceed.
+    /// - Returns: `true` if the write succeeded; `false` on encode or DB error.
     @discardableResult
     func saveWorkspaces(
         _ workspaces: [UUID: ProfileWorkspace],
         activeProfileID: UUID
     ) -> Bool {
+        guard let db = dbWriter else { return false }
+
         let active = workspaces[activeProfileID]
         let legacyTabs: [SessionSnapshot.TabSnapshot] = (active?.tabs ?? [])
             .map(\.asTabSnapshot)
         let legacySelected = active?.selectedTabID
 
-        // String-keyed dict for Codable conformance.
-        let coded = Dictionary(uniqueKeysWithValues:
-            workspaces.map { (k, v) in (k.uuidString, v) }
+        let coded = Dictionary(
+            uniqueKeysWithValues: workspaces.map { (k, v) in (k.uuidString, v) }
         )
         var snapshot = SessionSnapshot(
             tabs: legacyTabs,
@@ -128,29 +169,68 @@ actor SessionStore {
             savedAt: Date()
         )
         snapshot.workspaces = coded
-        guard let data = try? JSONEncoder().encode(snapshot) else { return false }
+
+        guard let jsonString = encode(snapshot) else { return false }
         do {
-            try data.write(to: fileURL, options: .atomic)
+            try db.write { connection in
+                try connection.execute(
+                    sql: """
+                    INSERT OR REPLACE INTO browserSession (key, snapshotJSON, savedAt)
+                    VALUES ('current', ?, ?)
+                    """,
+                    arguments: [jsonString, Date()]
+                )
+            }
             return true
         } catch {
-            // Surface write failures via stderr so crash logs and test assertions
-            // can detect them. Silent swallowing was the prior behaviour; callers
-            // that do not check the return value are unaffected.
             fputs("SessionStore: workspace write failed: \(error)\n", stderr)
             return false
         }
     }
 
-    /// Deletes the saved session file (e.g. after a fresh-start launch).
+    /// Deletes the saved session row (e.g. after a fresh-start launch).
     func clear() {
-        try? FileManager.default.removeItem(at: fileURL)
+        guard let db = dbWriter else { return }
+        do {
+            try db.write { connection in
+                try connection.execute(
+                    sql: "DELETE FROM browserSession WHERE key = 'current'"
+                )
+            }
+        } catch {
+            fputs("SessionStore.clear: \(error)\n", stderr)
+        }
     }
 
     // MARK: - Read
 
     /// Returns the most recently saved snapshot, or nil if none exists.
     func restore() -> SessionSnapshot? {
-        guard let data = try? Data(contentsOf: fileURL) else { return nil }
-        return try? JSONDecoder().decode(SessionSnapshot.self, from: data)
+        guard let db = dbWriter else { return nil }
+        do {
+            return try db.read { connection in
+                guard let row = try Row.fetchOne(
+                    connection,
+                    sql: "SELECT snapshotJSON FROM browserSession WHERE key = 'current'"
+                ) else { return nil }
+                let jsonString: String = row["snapshotJSON"]
+                guard let data = jsonString.data(using: .utf8) else { return nil }
+                return try JSONDecoder().decode(SessionSnapshot.self, from: data)
+            }
+        } catch {
+            fputs("SessionStore.restore: \(error)\n", stderr)
+            return nil
+        }
+    }
+
+    // MARK: - Private helpers
+
+    private func encode(_ snapshot: SessionSnapshot) -> String? {
+        guard let data = try? JSONEncoder().encode(snapshot),
+              let str = String(data: data, encoding: .utf8) else {
+            fputs("SessionStore: JSON encode failed\n", stderr)
+            return nil
+        }
+        return str
     }
 }
