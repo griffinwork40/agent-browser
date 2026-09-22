@@ -26,7 +26,8 @@ final class BrowserAutomationService {
 
     /// UUIDs of tabs whose `onNavigationDidFinish` callback has been wired for
     /// session-expiry detection. Prevents double-wiring on repeated tab access.
-    private var sessionExpiryWiredTabs: Set<UUID> = []
+    /// Internal (not private) so the `closeTabResponse` extension can remove closed tabs.
+    var sessionExpiryWiredTabs: Set<UUID> = []
 
     init(tabManager: TabManager, takeoverHandler: TakeoverHandler) {
         self.tabManager = tabManager
