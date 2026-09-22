@@ -5,6 +5,13 @@
 import Foundation
 import WebKit
 
+// MARK: - Errors
+
+/// Thrown by `extractText(from:)` when the WKWebView does not respond within the allowed window.
+private struct TextExtractionTimeoutError: Error, LocalizedError {
+    var errorDescription: String? { "Text extraction timed out — tab may be detached or suspended." }
+}
+
 // MARK: - Result Model
 
 /// A single search match found in a tab's text content.
@@ -76,15 +83,52 @@ struct ContentSearchResult: Identifiable {
     }
 
     /// Evaluates `document.body.innerText` in the web view.
+    ///
+    /// Two protections are applied:
+    ///
+    /// 1. **Timeout** – if WKWebView does not deliver the callback within 4 seconds
+    ///    (e.g. the view is detached, zero-sized, or the renderer process is suspended),
+    ///    the call throws `TextExtractionTimeoutError` so the caller's sequential loop
+    ///    moves on rather than blocking the MainActor indefinitely.
+    ///
+    /// 2. **Isolated content world** – the JS runs in `WKContentWorld.defaultClient`,
+    ///    which is separate from the page's own script execution environment. Page scripts
+    ///    cannot observe or tamper with the evaluation, and `window`/global overrides set
+    ///    by page code do not affect the result.
     private func extractText(from webView: WKWebView) async throws -> String {
-        return try await withCheckedThrowingContinuation { continuation in
-            webView.evaluateJavaScript("document.body ? document.body.innerText : ''") { result, error in
-                if let error {
-                    continuation.resume(throwing: error)
-                } else {
-                    continuation.resume(returning: (result as? String) ?? "")
+        // Race the JS evaluation against a 4-second deadline. We use withThrowingTaskGroup
+        // so the losing child is cancelled automatically when the winner settles.
+        //
+        // Note: WKWebView.evaluateJavaScript callbacks are delivered on the main thread, so
+        // the continuation is safe to resume from the callback — we're already @MainActor.
+        return try await withThrowingTaskGroup(of: String.self) { group in
+            // Child 1: the actual JS evaluation in an isolated content world.
+            group.addTask { @MainActor in
+                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<String, Error>) in
+                    webView.evaluateJavaScript(
+                        "document.body ? document.body.innerText : ''",
+                        in: nil,                         // main frame
+                        in: .defaultClient               // isolated from page scripts
+                    ) { result in
+                        switch result {
+                        case .failure(let error):
+                            continuation.resume(throwing: error)
+                        case .success(let value):
+                            continuation.resume(returning: (value as? String) ?? "")
+                        }
+                    }
                 }
             }
+
+            // Child 2: timeout sentinel — throws after 4 seconds.
+            group.addTask {
+                try await Task.sleep(for: .seconds(4))
+                throw TextExtractionTimeoutError()
+            }
+
+            // Take the first result (JS text or timeout error) and cancel the other child.
+            defer { group.cancelAll() }
+            return try await group.next()!
         }
     }
 
