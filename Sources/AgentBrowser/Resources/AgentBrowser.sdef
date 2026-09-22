@@ -1,0 +1,251 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE dictionary SYSTEM "file://localhost/System/Library/DTDs/sdef.dtd">
+
+<!--
+  AgentBrowser.sdef — AppleScript Scripting Definition
+  Defines the scriptable surface for Agent Browser: application, windows, tabs,
+  and basic navigation commands.
+
+  Example usage:
+    tell application "AgentBrowser"
+      set tabCount to count of tabs of window 1
+      set t to make new tab with properties {URL:"https://example.com"}
+      get URL of active tab of window 1
+      close tab 2 of window 1
+    end tell
+-->
+
+<dictionary title="Agent Browser Terminology" xmlns:xi="http://www.w3.org/2003/XInclude">
+
+  <!-- ============================================================
+       Suite: Standard Additions (inherit built-in Cocoa scripting)
+       ============================================================ -->
+  <suite name="Standard Suite" code="core"
+         description="Common scripting commands and classes.">
+
+    <command name="close" code="coreclos" description="Close a tab.">
+      <cocoa class="NSCloseCommand"/>
+      <access-group identifier="*"/>
+    </command>
+
+    <command name="quit" code="aevtquit" description="Quit the application.">
+      <cocoa class="NSQuitCommand"/>
+      <access-group identifier="*"/>
+    </command>
+
+    <command name="count" code="corecnte"
+             description="Count the elements of an object.">
+      <cocoa class="NSCountCommand"/>
+      <access-group identifier="*"/>
+      <direct-parameter description="The object whose elements to count."
+                        type="specifier"/>
+      <result description="The count." type="integer"/>
+    </command>
+
+    <command name="exists" code="coredoex"
+             description="Verify whether an object exists.">
+      <cocoa class="NSExistsCommand"/>
+      <access-group identifier="*"/>
+      <direct-parameter description="The object(s) to check." type="specifier"/>
+      <result description="True if it exists." type="boolean"/>
+    </command>
+
+    <command name="make" code="corecrel"
+             description="Create a new object.">
+      <cocoa class="NSCreateCommand"/>
+      <access-group identifier="*"/>
+      <parameter name="new" code="kocl" description="The class of the new object."
+                 type="type"/>
+      <parameter name="with properties" code="prdt"
+                 description="Initial property values." type="record" optional="yes"/>
+      <result description="The newly created object." type="specifier"/>
+    </command>
+
+    <command name="get" code="coregetd" description="Get the value of a property.">
+      <cocoa class="NSGetCommand"/>
+      <access-group identifier="*"/>
+      <direct-parameter description="The object to get." type="specifier"/>
+      <result description="The value." type="any"/>
+    </command>
+
+    <command name="set" code="coresetd" description="Set the value of a property.">
+      <cocoa class="NSSetCommand"/>
+      <access-group identifier="*"/>
+      <direct-parameter description="The object to set." type="specifier"/>
+      <parameter name="to" code="data" description="The new value." type="any"/>
+    </command>
+
+    <!-- Shared application class properties -->
+    <class name="application" code="capp" description="The Agent Browser application."
+           plural="applications">
+      <cocoa class="NSApplication"/>
+
+      <property name="name" code="pnam" description="The name of the application."
+                type="text" access="r">
+        <cocoa key="name"/>
+      </property>
+
+      <property name="frontmost" code="pisf"
+                description="Is this the frontmost application?"
+                type="boolean" access="r">
+        <cocoa key="isActive"/>
+      </property>
+
+      <property name="version" code="vers" description="The version of the application."
+                type="text" access="r">
+        <cocoa key="version"/>
+      </property>
+
+      <element type="window" access="r">
+        <cocoa key="orderedWindows"/>
+      </element>
+
+      <responds-to command="quit">
+        <cocoa method="handleQuitScriptCommand:"/>
+      </responds-to>
+    </class>
+
+    <class name="window" code="cwin" description="A browser window."
+           plural="windows">
+      <cocoa class="NSWindow"/>
+
+      <property name="name" code="pnam" description="The window title."
+                type="text" access="r">
+        <cocoa key="title"/>
+      </property>
+
+      <property name="id" code="ID  " description="The unique identifier."
+                type="integer" access="r">
+        <cocoa key="uniqueID"/>
+      </property>
+
+      <property name="visible" code="pvis" description="Whether the window is visible."
+                type="boolean" access="rw">
+        <cocoa key="isVisible"/>
+      </property>
+
+      <property name="miniaturized" code="pmnd"
+                description="Whether the window is miniaturized."
+                type="boolean" access="rw">
+        <cocoa key="isMiniaturized"/>
+      </property>
+    </class>
+
+  </suite>
+
+  <!-- ============================================================
+       Suite: Agent Browser — browser-specific classes and commands
+       ============================================================ -->
+  <suite name="Agent Browser Suite" code="AgBr"
+         description="Agent Browser-specific scripting: tabs and navigation.">
+
+    <!-- ── Application extension ── -->
+    <class-extension extends="application" description="Agent Browser application.">
+      <cocoa class="NSApplication"/>
+
+      <responds-to command="open location">
+        <cocoa method="handleOpenLocationCommand:"/>
+      </responds-to>
+    </class-extension>
+
+    <!-- ── Window extension ── -->
+    <class-extension extends="window" description="Agent Browser window with tabs.">
+      <cocoa class="NSWindow"/>
+
+      <property name="active tab" code="AcTb"
+                description="The currently selected tab."
+                type="tab" access="rw">
+        <cocoa key="scriptingActiveTab"/>
+      </property>
+
+      <element type="tab" access="rw">
+        <cocoa key="scriptingTabs"/>
+      </element>
+
+      <responds-to command="close">
+        <cocoa method="handleCloseScriptCommand:"/>
+      </responds-to>
+    </class-extension>
+
+    <!-- ── Tab class ── -->
+    <class name="tab" code="BrTb" description="A browser tab." plural="tabs">
+      <cocoa class="ScriptableTab"/>
+
+      <property name="id" code="ID  " description="Stable UUID string for this tab."
+                type="text" access="r">
+        <cocoa key="scriptingID"/>
+      </property>
+
+      <property name="name" code="pnam" description="The tab's current page title."
+                type="text" access="r">
+        <cocoa key="scriptingTitle"/>
+      </property>
+
+      <property name="URL" code="pURL" description="The URL loaded in this tab."
+                type="text" access="rw">
+        <cocoa key="scriptingURL"/>
+      </property>
+
+      <property name="index" code="pidx"
+                description="1-based position of this tab in the window."
+                type="integer" access="r">
+        <cocoa key="scriptingIndex"/>
+      </property>
+
+      <property name="loading" code="pLdg"
+                description="True while the tab is loading."
+                type="boolean" access="r">
+        <cocoa key="scriptingIsLoading"/>
+      </property>
+
+      <responds-to command="close">
+        <cocoa method="handleClose:"/>
+      </responds-to>
+
+      <responds-to command="reload">
+        <cocoa method="handleReload:"/>
+      </responds-to>
+
+      <responds-to command="go back">
+        <cocoa method="handleGoBack:"/>
+      </responds-to>
+
+      <responds-to command="go forward">
+        <cocoa method="handleGoForward:"/>
+      </responds-to>
+
+    </class>
+
+    <!-- ── Commands ── -->
+
+    <command name="open location" code="GURLGURL"
+             description="Open a URL, creating a new tab if needed.">
+      <cocoa class="OpenLocationCommand"/>
+      <access-group identifier="*"/>
+      <direct-parameter description="The URL to open." type="text"/>
+    </command>
+
+    <command name="reload" code="AgBrReld"
+             description="Reload the specified tab.">
+      <cocoa class="ReloadTabCommand"/>
+      <access-group identifier="*"/>
+      <direct-parameter description="The tab to reload." type="specifier" optional="yes"/>
+    </command>
+
+    <command name="go back" code="AgBrBack"
+             description="Navigate the specified tab back.">
+      <cocoa class="GoBackCommand"/>
+      <access-group identifier="*"/>
+      <direct-parameter description="The tab." type="specifier" optional="yes"/>
+    </command>
+
+    <command name="go forward" code="AgBrFwrd"
+             description="Navigate the specified tab forward.">
+      <cocoa class="GoForwardCommand"/>
+      <access-group identifier="*"/>
+      <direct-parameter description="The tab." type="specifier" optional="yes"/>
+    </command>
+
+  </suite>
+
+</dictionary>
