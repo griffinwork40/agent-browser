@@ -9,6 +9,14 @@ import WebKit
 
 extension BrowserWindowController {
 
+    // MARK: - Window Actions
+
+    /// Opens a new browser window via WindowSessionManager.
+    /// Bound to Cmd-N in the File menu.
+    @objc func newWindow(_ sender: Any?) {
+        windowSessionManager?.createWindow()
+    }
+
     @objc func newTab(_ sender: Any?) {
         let tab = tabManager.createTab()
         tabManager.select(tab: tab)

@@ -2,8 +2,9 @@ import AppKit
 import SwiftUI
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private var windowController: BrowserWindowController?
-    private var agentServer: AgentHTTPServer?
+
+    // MARK: - Core Services
+
     private var activityStore: AgentActivityStore?
 
     /// Guards against duplicate in-flight quit-save Tasks when Cocoa calls
@@ -11,20 +12,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// while the async save is pending).
     @MainActor private var quitSaveInFlight = false
 
-    // Shared state: ProfileManager and TabManager for the whole app.
-    // Initialized in applicationDidFinishLaunching (already on main thread).
+    private let persistenceCoordinator = PersistenceCoordinator()
     private var profileManager: ProfileManager?
-    private var tabManager: TabManager?
 
-    // Extension manager: web extension loading / lifecycle.
-    // `internal` so AppDelegate+Extensions.swift can access it.
+    /// Extension manager: web extension loading / lifecycle.
+    /// `internal` so AppDelegate+Extensions.swift can access it.
     var extensionManager: ExtensionManager?
 
     /// Content blocker: created before TabManager so ProfileManager can use it.
     private var contentBlockerManager: ContentBlockerManager?
 
-    // Persistence coordinator: sessions, history, auto-save.
-    private let persistenceCoordinator = PersistenceCoordinator()
+    /// Keeps the extensions panel window alive while it's open.
+    /// `internal` so the AppDelegate+Extensions extension file can set it.
+    var extensionsPanelWindow: NSWindow?
+
+    /// Central multi-window coordinator — created in applicationDidFinishLaunching.
+    @MainActor private var windowSessionManager: WindowSessionManager?
+
+    /// Agent HTTP server for automation (singleton across all windows).
+    private var agentServer: AgentHTTPServer?
+
+    // MARK: - Launch
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupMainMenu()
@@ -43,136 +51,196 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pm.contentBlockerManager = cbm
         self.profileManager = pm
 
-        let tm = TabManager(profileManager: pm)
-        self.tabManager = tm
-
-        // Create the browser window (without an initial tab — restore decides).
-        windowController = BrowserWindowController(
-            tabManager: tm,
+        let wsm = WindowSessionManager(
             profileManager: pm,
-            skipInitialTab: true
+            persistenceCoordinator: persistenceCoordinator
         )
-        windowController?.showWindow(nil)
+        self.windowSessionManager = wsm
 
-        // Start the agent automation server
-        let automationService = BrowserAutomationService(
-            tabManager: tm,
-            takeoverHandler: TakeoverHandler()
-        )
-        agentServer = AgentHTTPServer(automationService: automationService)
-        agentServer?.start()
-
-        // Wire the ghost cursor overlay: attach the controller and inject the delegate.
-        if let wc = windowController, let as_ = activityStore {
-            wc.setupGhostCursor(automationService: automationService,
-                                activityStore: as_)
-        }
-
-        NSApp.activate(ignoringOtherApps: true)
-
-        // Bootstrap persistence stores and restore the previous session.
-        // Runs async to avoid blocking the main thread during disk I/O,
-        // but stays on MainActor so TabManager mutations are safe.
+        // Bootstrap persistence then restore (or create) the first window.
         Task { @MainActor in
             // Start content blocker setup (downloads filter lists if stale).
             await cbm.setUp()
 
             await persistenceCoordinator.setUp(defaultProfileID: pm.activeProfileID)
 
-            // P4: Restore per-profile workspaces (v2 path; migrates legacy flat tabs).
-            let savedWorkspaces = await persistenceCoordinator.restoreWorkspaces(
-                activeProfileID: pm.activeProfileID
-            )
+            let windowSnapshots = await persistenceCoordinator.restoreWindowSnapshots()
 
-            if !savedWorkspaces.isEmpty {
-                // Wire registry into window controller before restoring tabs.
-                windowController?.loadWorkspaceRegistry(savedWorkspaces)
+            if !windowSnapshots.isEmpty {
+                // Restore each saved window in order.
+                for winSnap in windowSnapshots {
+                    let wc = wsm.createWindow(skipInitialTab: true)
+                    let workspaces = winSnap.workspacesByUUID
+                    let activeProfileID = winSnap.activeProfileID
 
-                // Recreate tabs for every known profile (active first for focus).
-                let allProfileIDs = [pm.activeProfileID] +
-                    pm.profiles.map(\.id).filter { $0 != pm.activeProfileID }
-                for profileID in allProfileIDs {
-                    guard let ws = savedWorkspaces[profileID], !ws.isEmpty else { continue }
-                    for entry in ws.tabs {
-                        tm.createTab(
-                            url: entry.url,
-                            provenance: .restored(originalAgentID: nil, originalSessionTag: nil),
-                            profileID: entry.profileID,
-                            id: entry.id
-                        )
+                    wc.loadWorkspaceRegistry(workspaces)
+
+                    // Recreate tabs — active profile first so it gets focus.
+                    let allProfileIDs = [activeProfileID] +
+                        pm.profiles.map(\.id).filter { $0 != activeProfileID }
+                    for pid in allProfileIDs {
+                        guard let ws = workspaces[pid], !ws.isEmpty else { continue }
+                        for entry in ws.tabs {
+                            wc.tabManager.createTab(
+                                url: entry.url,
+                                provenance: .restored(originalAgentID: nil, originalSessionTag: nil),
+                                profileID: entry.profileID,
+                                id: entry.id
+                            )
+                        }
                     }
-                }
-                // Select the active profile's previously-chosen tab.
-                if let activeWs = savedWorkspaces[pm.activeProfileID],
-                   let selID = activeWs.selectedTabID,
-                   let tab = tm.tab(for: selID) {
-                    tm.select(tab: tab)
-                } else if let first = tm.tabs.first(where: { $0.record.profileID == pm.activeProfileID }) {
-                    tm.select(tab: first)
-                } else if let any = tm.tabs.first {
-                    tm.select(tab: any)
+
+                    // Select the previously-chosen tab for the active profile.
+                    if let activeWs = workspaces[activeProfileID],
+                       let selID = activeWs.selectedTabID,
+                       let tab = wc.tabManager.tab(for: selID) {
+                        wc.tabManager.select(tab: tab)
+                    } else if let first = wc.tabManager.tabs.first(where: {
+                        $0.record.profileID == activeProfileID
+                    }) {
+                        wc.tabManager.select(tab: first)
+                    } else if let any = wc.tabManager.tabs.first {
+                        wc.tabManager.select(tab: any)
+                    }
+
+                    finishWiringWindow(wc, pm: pm)
                 }
             } else {
-                // No saved session — open a single blank tab for the active profile.
-                let firstTab = tm.createTab(profileID: pm.activeProfileID)
-                tm.select(tab: firstTab)
+                // Legacy path: try old single-window workspace format.
+                let savedWorkspaces = await persistenceCoordinator.restoreWorkspaces(
+                    activeProfileID: pm.activeProfileID
+                )
+
+                let wc = wsm.createWindow(skipInitialTab: true)
+
+                if !savedWorkspaces.isEmpty {
+                    wc.loadWorkspaceRegistry(savedWorkspaces)
+                    let allProfileIDs = [pm.activeProfileID] +
+                        pm.profiles.map(\.id).filter { $0 != pm.activeProfileID }
+                    for pid in allProfileIDs {
+                        guard let ws = savedWorkspaces[pid], !ws.isEmpty else { continue }
+                        for entry in ws.tabs {
+                            wc.tabManager.createTab(
+                                url: entry.url,
+                                provenance: .restored(originalAgentID: nil, originalSessionTag: nil),
+                                profileID: entry.profileID,
+                                id: entry.id
+                            )
+                        }
+                    }
+                    if let activeWs = savedWorkspaces[pm.activeProfileID],
+                       let selID = activeWs.selectedTabID,
+                       let tab = wc.tabManager.tab(for: selID) {
+                        wc.tabManager.select(tab: tab)
+                    } else if let first = wc.tabManager.tabs.first(where: {
+                        $0.record.profileID == pm.activeProfileID
+                    }) {
+                        wc.tabManager.select(tab: first)
+                    } else if let any = wc.tabManager.tabs.first {
+                        wc.tabManager.select(tab: any)
+                    }
+                } else {
+                    // No saved session — open a single blank tab.
+                    let firstTab = wc.tabManager.createTab(profileID: pm.activeProfileID)
+                    wc.tabManager.select(tab: firstTab)
+                }
+
+                finishWiringWindow(wc, pm: pm)
             }
 
-            // Wire coordinator back-reference so switch/persist paths work.
-            windowController?.persistenceCoordinator = persistenceCoordinator
+            // Wire agent HTTP server and ghost cursor against the first window's tab manager.
+            if let firstWC = wsm.windowControllers.first {
+                let automationService = BrowserAutomationService(
+                    tabManager: firstWC.tabManager,
+                    takeoverHandler: TakeoverHandler()
+                )
+                agentServer = AgentHTTPServer(automationService: automationService)
+                agentServer?.start()
 
-            // Wire history recording into the window controller.
-            if let historyStore = persistenceCoordinator.makeHistoryStore() {
-                windowController?.attachHistoryStore(historyStore)
+                // Wire ghost cursor overlay on the first window.
+                if let as_ = activityStore {
+                    firstWC.setupGhostCursor(automationService: automationService,
+                                             activityStore: as_)
+                }
             }
 
-            windowController?.syncDisplayedTab()
-            windowController?.updateSidebar()
+            // Multi-window auto-save every 30 s.
+            startMultiWindowAutoSave(wsm: wsm, pm: pm)
 
-            // Start debounced auto-save (every 30 s) using workspace-aware path.
-            persistenceCoordinator.startAutoSave(
-                tabManager: tm,
-                profileManager: pm,
-                windowController: windowController
-            )
+            NSApp.activate(ignoringOtherApps: true)
         }
     }
 
+    // MARK: - Window Wiring Helper
+
+    @MainActor
+    private func finishWiringWindow(_ wc: BrowserWindowController, pm: ProfileManager) {
+        wc.persistenceCoordinator = persistenceCoordinator
+
+        if let historyStore = persistenceCoordinator.makeHistoryStore() {
+            wc.attachHistoryStore(historyStore)
+        }
+        wc.syncDisplayedTab()
+        wc.updateSidebar()
+    }
+
+    // MARK: - Multi-Window Auto-Save
+
+    @MainActor private var multiWindowAutoSaveTimer: Timer?
+
+    @MainActor
+    private func startMultiWindowAutoSave(wsm: WindowSessionManager, pm: ProfileManager) {
+        multiWindowAutoSaveTimer?.invalidate()
+        multiWindowAutoSaveTimer = Timer.scheduledTimer(
+            withTimeInterval: 30,
+            repeats: true
+        ) { [weak self, weak wsm, weak pm] _ in
+            guard let self, let wsm, let pm else { return }
+            Task { @MainActor [weak self, weak wsm, weak pm] in
+                guard let self, let wsm, let pm else { return }
+                _ = await self.buildAndSaveWindowSnapshots(wsm: wsm, pm: pm)
+            }
+        }
+    }
+
+    @MainActor
+    private func buildAndSaveWindowSnapshots(
+        wsm: WindowSessionManager,
+        pm: ProfileManager
+    ) async -> Bool {
+        let snaps = wsm.windowControllers.map { wc in
+            WindowSnapshot(
+                workspaces: wc.snapshotAllWorkspaces(
+                    tabManager: wc.tabManager,
+                    profileManager: wc.profileManager
+                ),
+                activeProfileID: wc.profileManager.activeProfileID
+            )
+        }
+        let activeProfileID = wsm.activeWindowController?.profileManager.activeProfileID
+            ?? pm.activeProfileID
+        return await persistenceCoordinator.saveWindowSnapshotsAndWait(
+            snaps,
+            activeProfileID: activeProfileID
+        )
+    }
+
+    // MARK: - App Lifecycle
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        // With multi-window, only quit when the last window is closed.
         true
     }
 
-    // MARK: - Quit-time persistence
-    //
-    // Ordering invariants:
-    //   1. stopAutoSave() fires BEFORE the persistence await so an in-flight
-    //      auto-save Task cannot race against the quit save and overwrite it
-    //      with a stale snapshot.
-    //   2. agentServer.stop() is deferred until AFTER a successful save so the
-    //      server stays usable while the async save window is open. On a save
-    //      failure we show an alert and cancel termination — the server must
-    //      remain running so the user can retry. On success we stop it just
-    //      before telling Cocoa to proceed.
-    //   3. A small `quitSaveInFlight` flag prevents duplicate saves when Cocoa
-    //      re-invokes applicationShouldTerminate (e.g. repeated Cmd-Q while the
-    //      async window is open). If already in-flight, we defer again rather
-    //      than double-save.
-    //
-    // We use applicationShouldTerminate(_:) + terminateLater /
-    // replyToApplicationShouldTerminate to obtain an async window inside what
-    // is otherwise a synchronous Cocoa gate.
-    // applicationWillTerminate(_:) is NOT used for saves — it fires too late
-    // (after the reply) and offers no way to await async work safely.
+    /// Quit-time persistence.
+    ///
+    /// Ordering invariants (same as single-window but extended to all windows):
+    ///   1. Stop auto-save FIRST to avoid a race with the quit snapshot.
+    ///   2. Snapshot + await all windows.
+    ///   3. On success: stop agent server, reply true. On failure: alert, cancel.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        // Guard: if a quit-save is already in-flight (repeated Cmd-Q), just
-        // extend the wait — do NOT start a second concurrent save.
         if quitSaveInFlight { return .terminateLater }
         quitSaveInFlight = true
-
-        // Capture state synchronously on the main actor before the Task hop.
-        let wc = windowController
-        let pm = profileManager
-        let tm = tabManager
 
         Task { @MainActor [weak self] in
             guard let self else {
@@ -180,37 +248,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return
             }
 
-            // Step 1: stop auto-save FIRST (prevents race with quit save).
+            multiWindowAutoSaveTimer?.invalidate()
+            multiWindowAutoSaveTimer = nil
             persistenceCoordinator.stopAutoSave()
 
-            // Step 2: save all workspaces and await completion.
             var saved = true
-            if let wc, let pm {
-                let registry = wc.snapshotAllWorkspaces(tabManager: tm, profileManager: pm)
-                saved = await persistenceCoordinator.saveAllWorkspacesAndWait(
-                    registry,
-                    activeProfileID: pm.activeProfileID
-                )
+            if let wsm = windowSessionManager, let pm = profileManager {
+                saved = await buildAndSaveWindowSnapshots(wsm: wsm, pm: pm)
             }
 
             if saved {
-                // Step 3 (success): stop agent server, then let Cocoa terminate.
                 agentServer?.stop()
                 quitSaveInFlight = false
                 NSApp.reply(toApplicationShouldTerminate: true)
             } else {
-                // Step 3 (failure): alert user, resume auto-save, cancel quit.
                 quitSaveInFlight = false
-                // Resume auto-save so background snapshots continue — the user
-                // has not quit, and we need the coordinator running.
-                if let wc, let pm, let tm {
-                    persistenceCoordinator.startAutoSave(
-                        tabManager: tm,
-                        profileManager: pm,
-                        windowController: wc
-                    )
-                }
-                // Surface the failure clearly before cancelling.
                 let alert = NSAlert()
                 alert.alertStyle = .critical
                 alert.messageText = "Save Failed — Quit Cancelled"
@@ -224,13 +276,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        // Defer termination until the async save completes.
         return .terminateLater
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        // Intentionally empty: all quit persistence is handled in
-        // applicationShouldTerminate(_:) above to allow async awaiting.
+        // Intentionally empty — all quit persistence handled in
+        // applicationShouldTerminate(_:) to allow async awaiting.
     }
 
     // MARK: - Content Blocking
@@ -239,14 +290,5 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         contentBlockerManager?.toggleEnabled()
         sender.state = (contentBlockerManager?.isEnabled ?? false) ? .on : .off
     }
-
-    // MARK: - Extensions Panel (see AppDelegate+Extensions.swift)
-
-    /// Keeps the extensions panel window alive while it's open.
-    /// `internal` so the AppDelegate+Extensions extension file can set it.
-    var extensionsPanelWindow: NSWindow?
-
-
-    // MARK: - Main Menu (implementation in AppDelegate+MainMenu.swift)
-    func setupMainMenu() { _buildMainMenu() }
 }
+// Menu construction is in AppDelegate+MainMenu.swift (extracted to stay under 350 LOC).

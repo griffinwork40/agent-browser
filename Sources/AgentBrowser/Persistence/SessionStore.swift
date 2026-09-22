@@ -1,6 +1,35 @@
 import Foundation
 import GRDB
 
+// MARK: - WindowSnapshot
+
+/// Per-window snapshot used for multi-window session persistence.
+///
+/// Stores the workspace map for all profiles open in that window plus the
+/// active profile at the time of the snapshot. Windows are restored in
+/// order so the user sees the same arrangement on next launch.
+struct WindowSnapshot: Codable, Sendable {
+    /// Per-profile workspaces for this window (string-keyed for Codable).
+    var workspaces: [String: ProfileWorkspace]
+    /// The profile that was active in this window when the snapshot was taken.
+    var activeProfileID: UUID
+
+    init(workspaces: [UUID: ProfileWorkspace], activeProfileID: UUID) {
+        self.workspaces = Dictionary(
+            uniqueKeysWithValues: workspaces.map { ($0.key.uuidString, $0.value) }
+        )
+        self.activeProfileID = activeProfileID
+    }
+
+    /// Re-hydrate to UUID-keyed dictionary for use in the app layer.
+    var workspacesByUUID: [UUID: ProfileWorkspace] {
+        Dictionary(uniqueKeysWithValues: workspaces.compactMap { k, v -> (UUID, ProfileWorkspace)? in
+            guard let uuid = UUID(uuidString: k) else { return nil }
+            return (uuid, v)
+        })
+    }
+}
+
 // MARK: - SessionSnapshot
 
 /// A point-in-time capture of every open tab and which tab was active.
@@ -52,6 +81,10 @@ struct SessionSnapshot: Codable, Sendable {
     /// Per-profile workspace snapshots. Added in v2; absent in legacy files.
     /// Keyed by profile UUID string (Codable requires String keys in Dicts).
     var workspaces: [String: ProfileWorkspace]?
+
+    /// Multi-window snapshots. Added in v3; absent in legacy/single-window files.
+    /// When present, each element represents one window in creation order.
+    var windows: [WindowSnapshot]?
 
     // MARK: - Profile workspace helpers
 
@@ -184,6 +217,55 @@ actor SessionStore {
             return true
         } catch {
             fputs("SessionStore: workspace write failed: \(error)\n", stderr)
+            return false
+        }
+    }
+
+    /// Atomically writes multi-window snapshots alongside the legacy single-window
+    /// fields (populated from the first window's active profile for compatibility).
+    ///
+    /// - Parameters:
+    ///   - windowSnapshots: Ordered array — one entry per open window.
+    ///   - activeProfileID: Active profile of the frontmost window (for legacy field).
+    /// - Returns: `true` if the write succeeded.
+    @discardableResult
+    func saveWindowSnapshots(
+        _ windowSnapshots: [WindowSnapshot],
+        activeProfileID: UUID
+    ) -> Bool {
+        guard let db = dbWriter else { return false }
+
+        // Legacy compat: populate single-window fields from window[0] if present.
+        let primaryWorkspaces = windowSnapshots.first?.workspacesByUUID ?? [:]
+        let active = primaryWorkspaces[activeProfileID]
+        let legacyTabs: [SessionSnapshot.TabSnapshot] = (active?.tabs ?? []).map(\.asTabSnapshot)
+        let legacySelected = active?.selectedTabID
+
+        let coded = Dictionary(uniqueKeysWithValues:
+            primaryWorkspaces.map { (k, v) in (k.uuidString, v) }
+        )
+        var snapshot = SessionSnapshot(
+            tabs: legacyTabs,
+            selectedTabID: legacySelected,
+            savedAt: Date()
+        )
+        snapshot.workspaces = coded.isEmpty ? nil : coded
+        snapshot.windows = windowSnapshots.isEmpty ? nil : windowSnapshots
+
+        guard let jsonString = encode(snapshot) else { return false }
+        do {
+            try db.write { connection in
+                try connection.execute(
+                    sql: """
+                    INSERT OR REPLACE INTO browserSession (key, snapshotJSON, savedAt)
+                    VALUES ('current', ?, ?)
+                    """,
+                    arguments: [jsonString, Date()]
+                )
+            }
+            return true
+        } catch {
+            fputs("SessionStore: multi-window save failed: \(error)\n", stderr)
             return false
         }
     }

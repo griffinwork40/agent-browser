@@ -12,6 +12,10 @@ final class BrowserWindowController: NSWindowController {
     let tabManager: TabManager
     let profileManager: ProfileManager
 
+    /// Back-reference to the window manager — injected after creation.
+    /// Weak to avoid a retain cycle (manager owns controllers).
+    weak var windowSessionManager: WindowSessionManager?
+
     /// Track which tab is currently displayed in the view hierarchy.
     private var displayedTabID: UUID?
 
@@ -28,12 +32,14 @@ final class BrowserWindowController: NSWindowController {
     let toolbarContainer = NSView()
 
     // MARK: - Sidebar
+    // sidebarHostingController and sidebarContainerView are `internal` (not private)
+    // so BrowserWindowController+Sidebar.swift can reach them from the same module.
 
     var sidebarHostingController: NSHostingController<TabSidebarView>?
     let sidebarContainerView = NSView()
-    private var isSidebarVisible = true
+    var isSidebarVisible = true
     /// Stored so we can zero/restore it on toggle.
-    private var sidebarWidthConstraint: NSLayoutConstraint?
+    var sidebarWidthConstraint: NSLayoutConstraint?
 
     // MARK: - Ghost Cursor
 
@@ -73,6 +79,7 @@ final class BrowserWindowController: NSWindowController {
         window.titleVisibility = .hidden
 
         super.init(window: window)
+        window.delegate = self
         setupLayout()
         setupSidebar()
 
@@ -206,6 +213,7 @@ final class BrowserWindowController: NSWindowController {
         performWorkspacePreservingSwitch(to: profileID)
     }
 
+
     // MARK: - Sidebar Toggle
 
     @objc func toggleSidebar(_ sender: Any?) {
@@ -222,6 +230,7 @@ final class BrowserWindowController: NSWindowController {
     }
 
     // MARK: - Tab Display Sync
+    // Sidebar setup, makeSidebarView, promptAndCreateProfile → BrowserWindowController+Sidebar.swift
 
     /// Ensure the window shows the TabManager's currently selected tab.
     ///
