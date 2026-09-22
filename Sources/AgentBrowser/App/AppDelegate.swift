@@ -57,6 +57,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         self.windowSessionManager = wsm
 
+        // Bring the app to the front synchronously so the first window gets focus
+        // immediately on launch rather than waiting for the async restore Task.
+        NSApp.activate(ignoringOtherApps: true)
+
         // Bootstrap persistence then restore (or create) the first window.
         Task { @MainActor in
             // Start content blocker setup (downloads filter lists if stale).
@@ -166,8 +170,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
             // Multi-window auto-save every 30 s.
             startMultiWindowAutoSave(wsm: wsm, pm: pm)
-
-            NSApp.activate(ignoringOtherApps: true)
         }
     }
 
@@ -188,6 +190,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @MainActor private var multiWindowAutoSaveTimer: Timer?
 
+    /// Handle for the repeating auto-save task so it can be cancelled before
+    /// the quit snapshot runs, preventing a save-vs-save race on termination.
+    @MainActor private var multiWindowAutoSaveTask: Task<Void, Never>?
+
     @MainActor
     private func startMultiWindowAutoSave(wsm: WindowSessionManager, pm: ProfileManager) {
         multiWindowAutoSaveTimer?.invalidate()
@@ -196,10 +202,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             repeats: true
         ) { [weak self, weak wsm, weak pm] _ in
             guard let self, let wsm, let pm else { return }
-            Task { @MainActor [weak self, weak wsm, weak pm] in
+            // Dispatch the save on the MainActor so we can store the handle
+            // for cancellation in applicationShouldTerminate.
+            let task = Task { @MainActor [weak self, weak wsm, weak pm] in
                 guard let self, let wsm, let pm else { return }
                 _ = await self.buildAndSaveWindowSnapshots(wsm: wsm, pm: pm)
             }
+            // Assign from the outer (nonisolated) closure is unavoidable here;
+            // use a MainActor hop to cross the isolation boundary safely.
+            Task { @MainActor [weak self] in self?.multiWindowAutoSaveTask = task }
         }
     }
 
@@ -248,6 +259,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return
             }
 
+            multiWindowAutoSaveTask?.cancel()
+            multiWindowAutoSaveTask = nil
             multiWindowAutoSaveTimer?.invalidate()
             multiWindowAutoSaveTimer = nil
             persistenceCoordinator.stopAutoSave()
