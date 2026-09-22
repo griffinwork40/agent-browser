@@ -379,6 +379,30 @@ final class PersistenceCoordinator {
         }
     }
 
+    // MARK: - Multi-Window Save
+
+    /// Awaitable variant for the quit path: saves all window snapshots and returns
+    /// `true` on success, `false` on any encode/write failure.
+    ///
+    /// Callers must invoke `stopAutoSave()` BEFORE this to prevent races.
+    @MainActor
+    @discardableResult
+    func saveWindowSnapshotsAndWait(
+        _ snapshots: [WindowSnapshot],
+        activeProfileID: UUID
+    ) async -> Bool {
+        guard let store = sessionStore else { return false }
+        return await store.saveWindowSnapshots(snapshots, activeProfileID: activeProfileID)
+    }
+
+    /// Restore multi-window snapshots from disk. Returns an empty array when the
+    /// file predates multi-window support (`windows` field absent).
+    func restoreWindowSnapshots() async -> [WindowSnapshot] {
+        guard let store = sessionStore else { return [] }
+        guard let snapshot = await store.restore() else { return [] }
+        return snapshot.windows ?? []
+    }
+
     // MARK: - Test Hooks
 
     /// Inject a SessionStore directly, bypassing `PersistenceManager.shared`.
