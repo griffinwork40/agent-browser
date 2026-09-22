@@ -49,9 +49,10 @@ final class ContentBlockerManager {
     }
 
     private enum FilterURLs {
-        // Safari Content Blocker JSON format published by EasyList / AdguardTeam
-        static let easylist    = URL(string: "https://raw.githubusercontent.com/nicksindai/ublock_rules_safari/master/rules.json")!
-        static let easyprivacy = URL(string: "https://raw.githubusercontent.com/AdguardTeam/FiltersRegistry/master/filters/filter_118_Privacy/filter.txt")!
+        // Safari Content Blocker JSON format (trigger/action) — sourced from brave/brave-ios.
+        // block-ads.json covers ad networks; block-trackers.json covers trackers/analytics.
+        static let easylist    = URL(string: "https://raw.githubusercontent.com/brave/brave-ios/development/Sources/Brave/WebFilters/ContentBlocker/Lists/block-ads.json")!
+        static let easyprivacy = URL(string: "https://raw.githubusercontent.com/brave/brave-ios/development/Sources/Brave/WebFilters/ContentBlocker/Lists/block-trackers.json")!
     }
 
     /// Maximum age before cached filter lists are re-downloaded.
@@ -155,9 +156,12 @@ final class ContentBlockerManager {
     }
 
     private func compile(identifier: String, json: String) async -> WKContentRuleList? {
-        let store = WKContentRuleListStore.default()
+        guard let store = WKContentRuleListStore.default() else {
+            print("[ContentBlockerManager] WKContentRuleListStore unavailable — compile skipped (\(identifier))")
+            return nil
+        }
         return await withCheckedContinuation { continuation in
-            store?.compileContentRuleList(
+            store.compileContentRuleList(
                 forIdentifier: identifier,
                 encodedContentRuleList: json
             ) { ruleList, error in
@@ -177,7 +181,7 @@ final class ContentBlockerManager {
         try? FileManager.default.createDirectory(
             at: cacheDir, withIntermediateDirectories: true)
 
-        // Download EasyList (simplified Safari-compatible JSON via GitHub mirror).
+        // Download EasyList (ad-blocking rules in Safari Content Blocker JSON format).
         let easylistURL = cacheDir.appendingPathComponent("easylist.json")
         await downloadIfNeeded(
             from: FilterURLs.easylist,
@@ -185,10 +189,13 @@ final class ContentBlockerManager {
             identifier: Keys.easylistID
         )
 
-        // Record successful refresh time on MainActor.
-        await MainActor.run { [weak self] in
-            self?.defaults.set(Date().timeIntervalSince1970, forKey: Keys.lastFetch)
-        }
+        // Download EasyPrivacy (tracker/analytics-blocking rules).
+        let easyprivacyURL = cacheDir.appendingPathComponent("easyprivacy.json")
+        await downloadIfNeeded(
+            from: FilterURLs.easyprivacy,
+            to: easyprivacyURL,
+            identifier: Keys.easyprivacyID
+        )
     }
 
     private func downloadIfNeeded(from url: URL, to file: URL, identifier: String) async {
@@ -219,6 +226,8 @@ final class ContentBlockerManager {
                     }
                 }
                 self.pruneTrackedConfigurations()
+                // Stamp the last-fetch time only after a successful compile.
+                self.defaults.set(Date().timeIntervalSince1970, forKey: Keys.lastFetch)
             }
         } catch {
             print("[ContentBlockerManager] Download failed (\(url)): \(error)")
